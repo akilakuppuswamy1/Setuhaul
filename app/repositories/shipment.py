@@ -47,3 +47,12 @@ class ShipmentRepository(BaseRepository[Shipment]):
             .limit(1)
         )
         return self.session.scalar(stmt)
+
+    def lock_by_id(self, shipment_id: UUID) -> Shipment | None:
+        """Acquire a row-level lock on the shipment for concurrency-safe allocation."""
+        stmt = (
+            select(Shipment)
+            .where(Shipment.id == shipment_id)
+            .with_for_update()
+        )
+        return self.session.scalar(stmt)

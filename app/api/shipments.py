@@ -3,6 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, status
 
 from app.api.deps import (
+    get_allocation_service,
     get_driver_exception_service,
     get_eta_update_service,
     get_feasibility_service,
@@ -10,6 +11,7 @@ from app.api.deps import (
     get_shipment_service,
 )
 from app.models.enums import ShipmentStatus
+from app.schemas.allocation import AllocationRequest, AllocationResponse
 from app.schemas.appointment import AppointmentResponse
 from app.schemas.chat_thread import ChatThreadResponse
 from app.schemas.common import PaginatedResponse
@@ -18,6 +20,7 @@ from app.schemas.eta_update import ETAUpdateCreate, ETAUpdateResponse, LatestETA
 from app.schemas.feasibility import FeasibilityEvaluateRequest, FeasibilityResponse
 from app.schemas.facility_checkin import FacilityCheckinResponse
 from app.schemas.shipment import ShipmentDetailResponse, ShipmentResponse
+from app.services.allocation import AllocationService
 from app.services.feasibility import FeasibilityService
 from app.services.operations import DriverExceptionService, ETAUpdateService
 from app.services.shipment import ShipmentService
@@ -79,6 +82,25 @@ def evaluate_shipment_feasibility(
     service: FeasibilityService = Depends(get_feasibility_service),
 ) -> FeasibilityResponse:
     return service.evaluate(shipment_id, payload)
+
+
+@router.post(
+    "/{shipment_id}/allocate",
+    response_model=AllocationResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Allocate operational resources for a shipment",
+    responses={
+        404: {"description": "Shipment, slot, or dock not found"},
+        409: {"description": "Resource conflict or capacity exhausted"},
+        422: {"description": "Invalid allocation request"},
+    },
+)
+def allocate_shipment_resources(
+    shipment_id: UUID,
+    payload: AllocationRequest | None = None,
+    service: AllocationService = Depends(get_allocation_service),
+) -> AllocationResponse:
+    return service.allocate(shipment_id, payload)
 
 
 @router.get(

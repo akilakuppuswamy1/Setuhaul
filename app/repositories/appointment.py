@@ -1,7 +1,6 @@
-from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, select, text
 
 from app.models.appointment import Appointment
 from app.models.appointment_slot import AppointmentSlot
@@ -91,3 +90,42 @@ class AppointmentRepository(BaseRepository[Appointment]):
         if exclude_shipment_id is not None:
             stmt = stmt.where(Appointment.shipment_id != exclude_shipment_id)
         return int(self.session.scalar(stmt) or 0)
+
+    def create(
+        self,
+        *,
+        shipment_id: UUID,
+        facility_id: UUID,
+        appointment_slot_id: UUID | None,
+        dock_id: UUID | None,
+        status: AppointmentStatus,
+        notes: str | None = None,
+    ) -> Appointment:
+        entity = Appointment(
+            shipment_id=shipment_id,
+            facility_id=facility_id,
+            appointment_slot_id=appointment_slot_id,
+            dock_id=dock_id,
+            status=status,
+            notes=notes,
+        )
+        self.session.add(entity)
+        self.session.flush()
+        self.session.refresh(entity)
+        return entity
+
+    def acquire_shipment_advisory_lock(self, shipment_id: UUID) -> None:
+        """Transaction-scoped concurrency guard for per-shipment allocation."""
+        dialect = self.session.get_bind().dialect.name
+        if dialect == "postgresql":
+            self.session.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                {"lock_key": shipment_id.int % (2**63)},
+            )
+        else:
+            # SQLite fallback for unit tests: row-level shipment lock.
+            from app.models.shipment import Shipment
+
+            self.session.execute(
+                select(Shipment).where(Shipment.id == shipment_id).with_for_update()
+            )

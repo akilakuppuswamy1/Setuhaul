@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.schemas.common import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
+from app.services.allocation import AllocationService
 from app.services.appointment import (
     AppointmentService,
     AppointmentSlotService,
@@ -60,6 +61,7 @@ get_appointment_slot_service = _service_factory(AppointmentSlotService)
 get_dock_service = _service_factory(DockService)
 get_facility_rule_service = _service_factory(FacilityRuleService)
 get_feasibility_service = _service_factory(FeasibilityService)
+get_allocation_service = _service_factory(AllocationService)
 get_eta_update_service = _service_factory(ETAUpdateService)
 get_driver_exception_service = _service_factory(DriverExceptionService)
 get_facility_checkin_service = _service_factory(FacilityCheckinService)
