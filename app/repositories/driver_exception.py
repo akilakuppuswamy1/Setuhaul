@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Select
+from sqlalchemy import Select, select
 
 from app.models.driver_exception import DriverException
 from app.models.enums import ExceptionStatus, ExceptionType
@@ -37,6 +37,14 @@ class DriverExceptionRepository(BaseRepository[DriverException]):
         page_size: int = 50,
     ) -> tuple[list[DriverException], int]:
         return self.list_paginated(page=page, page_size=page_size, shipment_id=shipment_id)
+
+    def list_for_shipment(self, shipment_id: UUID) -> list[DriverException]:
+        stmt = (
+            select(DriverException)
+            .where(DriverException.shipment_id == shipment_id)
+            .order_by(DriverException.occurred_at, DriverException.id)
+        )
+        return list(self.session.scalars(stmt).all())
 
     def create(
         self,

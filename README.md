@@ -15,7 +15,86 @@ Operational decisions (slot feasibility, capacity, priority, dock compatibility,
 | 2H | Database Hardening | Complete |
 | 3 | Business APIs | Complete |
 | 4 | ETA + Exception Services | Complete |
-| 5+ | Feasibility, allocation, actions | Not started |
+| 5 | Deterministic Feasibility Engine | Complete |
+| 6+ | Allocation, actions | Not started |
+
+## Step 5 — Deterministic Feasibility Engine
+
+Step 5 adds a read-only, deterministic feasibility evaluation engine. It answers whether a shipment's operational request can be safely accepted under known constraints and persisted facts. The engine does **not** allocate resources, mutate state, or use AI/LLM services.
+
+### Architecture
+
+```
+HTTP → Router → Pydantic Schema → FeasibilityService → FeasibilityEngine
+                                              ↓
+                                        Repositories (read-only)
+```
+
+Layers:
+
+- `app/engines/feasibility/` — pure rule evaluation (no database access)
+- `app/services/feasibility.py` — fact retrieval and orchestration
+- `app/schemas/feasibility.py` — request/response contracts
+
+### Feasibility Endpoint
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/shipments/{id}/feasibility` | Evaluate operational feasibility |
+
+Optional request body:
+
+```json
+{
+  "appointment_slot_id": "uuid (optional — evaluate a specific slot)",
+  "dock_id": "uuid (optional — evaluate a specific dock)",
+  "evaluated_at": "2026-08-13T10:00:00+00:00 (optional — explicit timestamp for determinism)"
+}
+```
+
+### Result Semantics
+
+| Outcome | Meaning |
+|---------|---------|
+| `feasible` | All blocking rules passed |
+| `not_feasible` | One or more blocking rules failed |
+| `not_evaluable` | Required facts missing (e.g. ETA unavailable when slot window check is required) |
+
+Each response includes ordered `rule_results` with `rule_id`, `reason`, `severity`, and supporting `facts`.
+
+### Supported Deterministic Rules
+
+| Rule ID | Category | Description |
+|---------|----------|-------------|
+| SHIP-001 | Shipment | Shipment must be active |
+| SHIP-002 | Shipment | Status must not be terminal (cancelled/delivered) |
+| SHIP-003 | Shipment | Destination facility must be assigned |
+| CARR-001 | Carrier | Carrier must be active |
+| DRIV-001 | Driver | Assigned driver must be active |
+| VEHI-001 | Vehicle | Assigned vehicle must be active |
+| VEHI-002/003 | Vehicle | Weight/volume within vehicle capacity (when data present) |
+| FACI-001 | Facility | Destination facility must be active |
+| APPT-001/002 | Appointment | Appointment or slot context required; facility alignment |
+| SLOT-001–004 | Slot | Slot exists, facility match, status open, capacity available |
+| DOCK-001–005 | Dock | Dock presence, facility match, availability, weight, reefer compatibility |
+| RULE-001 | FacilityRule | `max_daily_appointments` limit |
+| RULE-002 | FacilityRule | `operating_hours` window (facility timezone) |
+| RULE-003 | FacilityRule | `dock_compatibility` vehicle type and pallet limits |
+| ETA-001 | ETA | Latest ETA (from Step 4 history) within slot window |
+| ETA-002 | ETA | Latest ETA outside operating hours (warning) |
+| EXCP-001 | Exception | No OPEN or ACKNOWLEDGED driver exceptions |
+
+### Limitations (Not Evaluable with Current Model)
+
+- Travel time / distance prediction (no coordinates or routing data)
+- Driver hours-of-service / availability schedules
+- Vehicle length vs dock `max_length_m` (vehicle has no length field)
+- Equipment string matching (`equipment_required` is free text)
+- Automatic slot `FULL` status derivation (status is manually set)
+- Dock time-calendar conflict detection (no time-based dock scheduling)
+- Exception delay quantification (no `delay_minutes` field)
+- Priority ranking among competing shipments
+- Double-booking concurrency control (Step 6+)
 
 ## Step 4 — ETA + Exception Services
 
@@ -98,7 +177,7 @@ app/
 ├── schemas/       # Pydantic request/response schemas
 ├── repositories/  # Database access
 ├── services/      # Application services
-├── engines/       # Deterministic decision engines (future steps)
+├── engines/       # Deterministic decision engines (Step 5 feasibility)
 └── api/           # FastAPI routes
 ```
 
@@ -155,7 +234,7 @@ pytest tests/test_api.py tests/test_health.py tests/test_models.py tests/test_mo
 
 ## Database Migrations
 
-Alembic manages schema migrations. Step 3 does not change the database schema.
+Alembic manages schema migrations. Step 5 does not change the database schema.
 
 ```bash
 alembic upgrade head    # apply migrations

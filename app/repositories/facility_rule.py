@@ -1,6 +1,7 @@
+from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Select
+from sqlalchemy import Select, or_, select
 
 from app.models.facility_rule import FacilityRule
 from app.repositories.base import BaseRepository
@@ -32,3 +33,19 @@ class FacilityRuleRepository(BaseRepository[FacilityRule]):
         page_size: int = 50,
     ) -> tuple[list[FacilityRule], int]:
         return self.list_paginated(page=page, page_size=page_size, facility_id=facility_id)
+
+    def list_active_at(self, facility_id: UUID, at_time: datetime) -> list[FacilityRule]:
+        stmt = (
+            select(FacilityRule)
+            .where(FacilityRule.facility_id == facility_id)
+            .where(FacilityRule.is_active.is_(True))
+            .where(FacilityRule.effective_start <= at_time)
+            .where(
+                or_(
+                    FacilityRule.effective_end.is_(None),
+                    FacilityRule.effective_end > at_time,
+                )
+            )
+            .order_by(FacilityRule.effective_start, FacilityRule.id)
+        )
+        return list(self.session.scalars(stmt).all())

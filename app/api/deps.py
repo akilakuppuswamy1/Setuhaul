@@ -18,6 +18,7 @@ from app.services.carrier import CarrierService
 from app.services.conversations import ChatMessageService, ChatThreadService, ContactService
 from app.services.driver import DriverService
 from app.services.facility import FacilityService
+from app.services.feasibility import FeasibilityService
 from app.services.operations import (
     DriverExceptionService,
     ETAUpdateService,
@@ -58,6 +59,7 @@ get_appointment_service = _service_factory(AppointmentService)
 get_appointment_slot_service = _service_factory(AppointmentSlotService)
 get_dock_service = _service_factory(DockService)
 get_facility_rule_service = _service_factory(FacilityRuleService)
+get_feasibility_service = _service_factory(FeasibilityService)
 get_eta_update_service = _service_factory(ETAUpdateService)
 get_driver_exception_service = _service_factory(DriverExceptionService)
 get_facility_checkin_service = _service_factory(FacilityCheckinService)

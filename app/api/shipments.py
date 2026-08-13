@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Query, status
 from app.api.deps import (
     get_driver_exception_service,
     get_eta_update_service,
+    get_feasibility_service,
     get_pagination,
     get_shipment_service,
 )
@@ -14,8 +15,10 @@ from app.schemas.chat_thread import ChatThreadResponse
 from app.schemas.common import PaginatedResponse
 from app.schemas.driver_exception import DriverExceptionCreate, DriverExceptionResponse
 from app.schemas.eta_update import ETAUpdateCreate, ETAUpdateResponse, LatestETAResponse
+from app.schemas.feasibility import FeasibilityEvaluateRequest, FeasibilityResponse
 from app.schemas.facility_checkin import FacilityCheckinResponse
 from app.schemas.shipment import ShipmentDetailResponse, ShipmentResponse
+from app.services.feasibility import FeasibilityService
 from app.services.operations import DriverExceptionService, ETAUpdateService
 from app.services.shipment import ShipmentService
 
@@ -59,6 +62,23 @@ def get_shipment(
     service: ShipmentService = Depends(get_shipment_service),
 ) -> ShipmentDetailResponse:
     return service.get(shipment_id)
+
+
+@router.post(
+    "/{shipment_id}/feasibility",
+    response_model=FeasibilityResponse,
+    summary="Evaluate operational feasibility for a shipment",
+    responses={
+        404: {"description": "Shipment, slot, or dock not found"},
+        422: {"description": "Invalid feasibility request"},
+    },
+)
+def evaluate_shipment_feasibility(
+    shipment_id: UUID,
+    payload: FeasibilityEvaluateRequest | None = None,
+    service: FeasibilityService = Depends(get_feasibility_service),
+) -> FeasibilityResponse:
+    return service.evaluate(shipment_id, payload)
 
 
 @router.get(
