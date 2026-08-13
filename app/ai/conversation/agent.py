@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.ai.conversation.clocks import slot_ends_on_or_before
 from app.ai.conversation.context import resolve_option, resolve_shipment
 from app.ai.conversation.escalation import driver_escalation_message, should_escalate
 from app.ai.conversation.formatter import format_turn, public_metadata
@@ -22,6 +23,7 @@ _SHIPMENT_REQUIRED = {
     ConversationIntent.REPORT_EXCEPTION,
     ConversationIntent.ASK_STATUS,
     ConversationIntent.ASK_OPTIONS,
+    ConversationIntent.ASK_FACILITY_SCHEDULE,
     ConversationIntent.PROPOSE_CHANGE,
     ConversationIntent.ACCEPT_PROPOSAL,
     ConversationIntent.REJECT_PROPOSAL,
@@ -54,6 +56,7 @@ class ConversationAgent:
         )
         if shipment_id is not None:
             context.shipment_id = shipment_id
+        _store_driver_constraints(understanding, context)
 
         if intent in _SHIPMENT_REQUIRED and shipment_id is None:
             question = shipment_question or "Which shipment are you referring to?"
@@ -149,6 +152,28 @@ class ConversationAgent:
                     "I couldn't match that to a presented option. Which numbered option do you mean?",
                 )
             context.selected_option_index = option.index
+        if understanding.leave_by_local or context.leave_by_local:
+            leave_by = understanding.leave_by_local or context.leave_by_local
+            option = _selected_option(context)
+            if option is not None:
+                fits = slot_ends_on_or_before(
+                    option.end_time,
+                    leave_by,
+                    context.facility_timezone,
+                )
+                if fits is None:
+                    return _clarification_turn(
+                        understanding.intent,
+                        understanding.confidence,
+                        context,
+                        (
+                            "I don't have a slot end time to check against your leave-by time, "
+                            "so I cannot propose that option without guessing. "
+                            "Which numbered option should I use?"
+                        ),
+                    )
+                if fits is False:
+                    return _leave_by_rejected_turn(understanding, context, option, leave_by)
         return None
 
 
@@ -165,22 +190,29 @@ def _plan_tools(understanding: Understanding, context: ConversationContext) -> "
             ]
         )
     if intent == ConversationIntent.CLARIFICATION_REQUIRED:
+        if context.leave_by_local:
+            return _Plan(
+                clarification=(
+                    f"I'll keep your leave-by time of {_display_hhmm(context.leave_by_local)} in mind. "
+                    "Would you like me to find appointment options that finish by then?"
+                ),
+                pending="options",
+            )
         return _Plan(clarification="Could you tell me what you need help with for this shipment?")
     if intent in {ConversationIntent.UPDATE_ETA, ConversationIntent.REPORT_DELAY}:
-        if understanding.delay_minutes is None and understanding.new_eta is None:
+        if understanding.delay_minutes is None and understanding.new_eta is None and understanding.eta_local is None:
             return _Plan(clarification="How late will you be, in minutes or hours?")
-        return _Plan(
-            calls=[
-                {
-                    "name": ToolName.RECORD_ETA_UPDATE.value,
-                    "arguments": {
-                        "shipment_id": shipment_id,
-                        "delay_minutes": understanding.delay_minutes,
-                        "reason": understanding.raw_message,
-                    },
-                }
-            ]
-        )
+        arguments: dict = {
+            "shipment_id": shipment_id,
+            "reason": understanding.raw_message,
+        }
+        if understanding.eta_local:
+            arguments["eta_local"] = understanding.eta_local
+            if context.facility_timezone:
+                arguments["timezone_name"] = context.facility_timezone
+        elif understanding.delay_minutes is not None:
+            arguments["delay_minutes"] = understanding.delay_minutes
+        return _Plan(calls=[{"name": ToolName.RECORD_ETA_UPDATE.value, "arguments": arguments}])
     if intent == ConversationIntent.REPORT_EXCEPTION:
         return _Plan(
             calls=[
@@ -196,9 +228,34 @@ def _plan_tools(understanding: Understanding, context: ConversationContext) -> "
             ]
         )
     if intent == ConversationIntent.ASK_STATUS:
+        if context.proposal_id is not None:
+            return _Plan(
+                calls=[
+                    {
+                        "name": ToolName.GET_PROPOSAL.value,
+                        "arguments": {"proposal_id": str(context.proposal_id)},
+                    }
+                ]
+            )
         return _Plan(calls=[{"name": ToolName.GET_SHIPMENT_STATUS.value, "arguments": {"shipment_id": shipment_id}}])
     if intent == ConversationIntent.ASK_OPTIONS:
-        return _Plan(calls=[{"name": ToolName.GET_AVAILABLE_OPTIONS.value, "arguments": {"shipment_id": shipment_id}}])
+        arguments = {"shipment_id": shipment_id}
+        if context.earliest_start_local:
+            arguments["earliest_start_local"] = context.earliest_start_local
+        if context.leave_by_local:
+            arguments["leave_by_local"] = context.leave_by_local
+        if context.facility_timezone:
+            arguments["timezone_name"] = context.facility_timezone
+        return _Plan(calls=[{"name": ToolName.GET_AVAILABLE_OPTIONS.value, "arguments": arguments}])
+    if intent == ConversationIntent.ASK_FACILITY_SCHEDULE:
+        return _Plan(
+            calls=[
+                {
+                    "name": ToolName.EVALUATE_FACILITY_SCHEDULE.value,
+                    "arguments": {"shipment_id": shipment_id},
+                }
+            ]
+        )
     if intent == ConversationIntent.PROPOSE_CHANGE:
         option = _selected_option(context)
         if option is None:
@@ -344,7 +401,7 @@ def _maybe_escalate(
     operational_conflict = False
     for result in results:
         if result.name == ToolName.GET_AVAILABLE_OPTIONS.value and result.success:
-            if int(result.data.get("feasible_count") or 0) == 0:
+            if int(result.data.get("unfiltered_feasible_count") or result.data.get("feasible_count") or 0) == 0:
                 no_safe_option = True
         if result.error_code in {"conflict", "stale"} and understanding.intent == ConversationIntent.ASK_OPTIONS:
             operational_conflict = True
@@ -376,6 +433,7 @@ def _resume_pending(understanding: Understanding, context: ConversationContext) 
     subject_change = {
         ConversationIntent.ASK_STATUS,
         ConversationIntent.ASK_OPTIONS,
+        ConversationIntent.ASK_FACILITY_SCHEDULE,
         ConversationIntent.ACCEPT_PROPOSAL,
         ConversationIntent.REJECT_PROPOSAL,
         ConversationIntent.HUMAN_ESCALATION,
@@ -441,6 +499,71 @@ def _completed_turn(
         context=context,
         metadata=public_metadata({"confidence": confidence}),
     )
+
+
+def _store_driver_constraints(understanding: Understanding, context: ConversationContext) -> None:
+    if understanding.earliest_start_local:
+        context.earliest_start_local = understanding.earliest_start_local
+    if understanding.leave_by_local:
+        context.leave_by_local = understanding.leave_by_local
+
+
+def _leave_by_rejected_turn(
+    understanding: Understanding,
+    context: ConversationContext,
+    option: PresentedOption,
+    leave_by: str,
+) -> AgentTurn:
+    compatible = [
+        item
+        for item in context.presented_options
+        if slot_ends_on_or_before(item.end_time, leave_by, context.facility_timezone) is True
+    ]
+    leave_label = _display_hhmm(leave_by)
+    option_label = option.label or f"option {option.index}"
+    if compatible:
+        numbered = ", ".join(str(item.index) for item in compatible)
+        question = (
+            f"Option {option.index} ({option_label}) ends after {leave_label}, "
+            "so I cannot propose it with your leave-by time. "
+            f"Options that end by {leave_label}: {numbered}. "
+            "Which numbered option should I use?"
+        )
+    else:
+        question = (
+            f"Option {option.index} ({option_label}) ends after {leave_label}, "
+            "so I cannot propose it with your leave-by time. "
+            "None of the currently shown options finish by then. "
+            "Would you like me to look for other appointment options?"
+        )
+        context.pending_clarification = "options"
+        context.pending_intent = ConversationIntent.ASK_OPTIONS
+    return AgentTurn(
+        intent=ConversationIntent.PROPOSE_CHANGE,
+        confidence=understanding.confidence,
+        response=question,
+        status="constraint",
+        requires_clarification=True,
+        context=context,
+        metadata=public_metadata(
+            {
+                "leave_by_local": leave_by,
+                "rejected_option_index": option.index,
+            }
+        ),
+    )
+
+
+def _display_hhmm(value: str) -> str:
+    hour_s, _, minute_s = value.partition(":")
+    try:
+        hour = int(hour_s)
+        minute = int(minute_s or "0")
+    except ValueError:
+        return value
+    suffix = "AM" if hour < 12 else "PM"
+    hour12 = hour % 12 or 12
+    return f"{hour12}:{minute:02d} {suffix}"
 
 
 def _context_summary(context: ConversationContext) -> str:

@@ -14,6 +14,7 @@ class ConversationIntent(str, Enum):
     REPORT_EXCEPTION = "REPORT_EXCEPTION"
     ASK_STATUS = "ASK_STATUS"
     ASK_OPTIONS = "ASK_OPTIONS"
+    ASK_FACILITY_SCHEDULE = "ASK_FACILITY_SCHEDULE"
     PROPOSE_CHANGE = "PROPOSE_CHANGE"
     ACCEPT_PROPOSAL = "ACCEPT_PROPOSAL"
     REJECT_PROPOSAL = "REJECT_PROPOSAL"
@@ -53,6 +54,9 @@ class ConversationContext(BaseModel):
     pending_clarification: str | None = None
     pending_intent: ConversationIntent | None = None
     pending_delay_minutes: int | None = None
+    facility_timezone: str | None = None
+    earliest_start_local: str | None = None
+    leave_by_local: str | None = None
     requires_human: bool = False
     escalation_reason: str | None = None
     candidate_shipments: list[CandidateShipment] = Field(default_factory=list)
@@ -65,6 +69,9 @@ class Understanding(BaseModel):
     shipment_hint: str | None = None
     delay_minutes: int | None = None
     new_eta: datetime | None = None
+    eta_local: str | None = None
+    earliest_start_local: str | None = None
+    leave_by_local: str | None = None
     option_index: int | None = None
     confirm: bool = False
     reject: bool = False

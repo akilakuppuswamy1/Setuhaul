@@ -25,9 +25,11 @@ from app.schemas.conversation import (
 from app.services.appointment import AppointmentSlotService
 from app.services.conversations import ChatMessageService, ChatThreadService
 from app.services.driver import DriverService
+from app.services.facility import FacilityService
 from app.services.feasibility import FeasibilityService
 from app.services.operations import DriverExceptionService, ETAUpdateService
 from app.services.proposal import ProposalService
+from app.services.scheduling import SchedulingService
 from app.services.shipment import ShipmentService
 
 _ACTIVE_STATUSES = {
@@ -45,13 +47,15 @@ class ConversationService:
         self._messages = ChatMessageService(session)
         self._drivers = DriverService(session)
         self._shipments = ShipmentService(session)
-        executor = ToolExecutor(
+        self._facilities = FacilityService(session)
+        self._executor = ToolExecutor(
             shipment_service=self._shipments,
             eta_service=ETAUpdateService(session),
             exception_service=DriverExceptionService(session),
             feasibility_service=FeasibilityService(session),
             slot_service=AppointmentSlotService(session),
             proposal_service=ProposalService(session),
+            scheduling_service=SchedulingService(session),
         )
         resolved_provider = provider or get_llm_provider(
             provider_name=settings.llm_provider,
@@ -59,7 +63,7 @@ class ConversationService:
             model=settings.llm_model,
             base_url=settings.llm_base_url,
         )
-        self._agent = ConversationAgent(executor, resolved_provider)
+        self._agent = ConversationAgent(self._executor, resolved_provider)
 
     def create_thread(self, payload: ConversationCreateRequest) -> ConversationCreateResponse:
         self._drivers.get(payload.driver_id)
@@ -85,6 +89,7 @@ class ConversationService:
         payload: ConversationMessageRequest,
     ) -> ConversationMessageResponse:
         thread = self._threads.get(thread_id)
+        self._executor.bind_driver(thread.driver_id)
         self._messages.create(
             chat_thread_id=thread_id,
             sender_type=SenderType.DRIVER,
@@ -168,7 +173,7 @@ class ConversationService:
                             status=shipment.status.value,
                         )
                     )
-        return context_from_thread(
+        context = context_from_thread(
             thread_id=thread_id,
             driver_id=thread.driver_id,
             shipment_id=thread.shipment_id,
@@ -176,6 +181,25 @@ class ConversationService:
             message_metadata=metadata_list,
             candidate_shipments=candidates,
         )
+        timezone_name = self._facility_timezone_for(context.shipment_id or thread.shipment_id)
+        if timezone_name:
+            context.facility_timezone = timezone_name
+        return context
+
+    def _facility_timezone_for(self, shipment_id: UUID | None) -> str | None:
+        if shipment_id is None:
+            return None
+        try:
+            shipment = self._shipments.get(shipment_id)
+        except Exception:
+            return None
+        facility_id = shipment.destination_facility_id
+        if facility_id is None:
+            return None
+        try:
+            return self._facilities.get(facility_id).timezone
+        except Exception:
+            return None
 
     def _persist_thread_links(self, thread_id: UUID, thread: Any, context: Any, requires_human: bool) -> None:
         subject = thread.subject
@@ -206,8 +230,17 @@ def _turn_metadata(turn: Any) -> dict[str, Any]:
 
 
 def _public_response_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    context = metadata.get("context") if isinstance(metadata.get("context"), dict) else {}
     return {
         "intent": metadata.get("intent"),
         "requires_human": metadata.get("requires_human"),
         "tool_calls": metadata.get("tool_calls"),
+        "presented_options": context.get("presented_options"),
+        "selected_option_index": context.get("selected_option_index"),
+        "latest_eta": context.get("latest_eta"),
+        "leave_by_local": context.get("leave_by_local"),
+        "earliest_start_local": context.get("earliest_start_local"),
+        "escalation_reason": context.get("escalation_reason"),
+        "exception_id": context.get("exception_id"),
+        "proposal_slot_id": context.get("proposal_slot_id"),
     }

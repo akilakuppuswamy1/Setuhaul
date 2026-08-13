@@ -55,6 +55,11 @@ def _format_result(result: ToolResult) -> str:
         return f"{number} is currently {status}.{eta_part}"
     if name == "get_available_options":
         options = [PresentedOption.model_validate(item) for item in data.get("options", [])]
+        if options:
+            return format_options(options)
+        note = data.get("constraint_note")
+        if note:
+            return str(note) + " Would you like a different window?"
         return format_options(options)
     if name == "create_proposal":
         status = data.get("status", "proposed")
@@ -85,6 +90,20 @@ def _format_result(result: ToolResult) -> str:
         )
     if name == "request_human_escalation":
         return data.get("message") or "I've marked this for human operations review."
+    if name == "evaluate_facility_schedule":
+        assignments = data.get("proposed_assignments") or []
+        unassigned = data.get("unassigned_shipments") or []
+        if not assignments and not unassigned:
+            return "I could not build a proposed facility schedule from current operational data."
+        lines = ["Here is a proposed facility schedule. It does not book or confirm capacity."]
+        for item in assignments[:8]:
+            kind = item.get("kind", "proposed")
+            rank = item.get("rank")
+            number = item.get("shipment_number") or item.get("shipment_id")
+            lines.append(f"{rank}. {number} ({kind})")
+        if unassigned:
+            lines.append(f"{len(unassigned)} shipment(s) were not assigned a proposed slot.")
+        return " ".join(lines) if len(lines) == 1 else "\n".join(lines)
     return ""
 
 

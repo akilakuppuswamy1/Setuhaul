@@ -121,6 +121,12 @@ def _merge_snapshot(context: ConversationContext, snapshot: dict[str, Any]) -> N
             pass
     if snapshot.get("pending_delay_minutes") is not None:
         context.pending_delay_minutes = snapshot["pending_delay_minutes"]
+    if snapshot.get("facility_timezone"):
+        context.facility_timezone = snapshot["facility_timezone"]
+    if snapshot.get("earliest_start_local"):
+        context.earliest_start_local = snapshot["earliest_start_local"]
+    if snapshot.get("leave_by_local"):
+        context.leave_by_local = snapshot["leave_by_local"]
     if snapshot.get("requires_human"):
         context.requires_human = True
         context.escalation_reason = snapshot.get("escalation_reason")

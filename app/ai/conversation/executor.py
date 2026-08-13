@@ -6,6 +6,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
+from app.ai.conversation.clocks import (
+    localize_clock_on,
+    slot_ends_on_or_before,
+    slot_starts_on_or_after,
+)
 from app.ai.conversation.models import PresentedOption, ToolResult
 from app.ai.conversation.tools import ALLOWED_TOOL_NAMES, ToolName, parse_tool_arguments
 from app.core.exceptions import ConflictError, NotFoundError, SetuHaulError
@@ -18,6 +23,7 @@ from app.services.appointment import AppointmentSlotService
 from app.services.feasibility import FeasibilityService
 from app.services.operations import DriverExceptionService, ETAUpdateService
 from app.services.proposal import ProposalService
+from app.services.scheduling import SchedulingService
 from app.services.shipment import ShipmentService
 
 _EXCEPTION_TYPES = {item.value: item for item in ExceptionType}
@@ -34,6 +40,7 @@ class ToolExecutor:
         feasibility_service: FeasibilityService,
         slot_service: AppointmentSlotService,
         proposal_service: ProposalService,
+        scheduling_service: SchedulingService | None = None,
     ) -> None:
         self._shipment_service = shipment_service
         self._eta_service = eta_service
@@ -41,6 +48,11 @@ class ToolExecutor:
         self._feasibility_service = feasibility_service
         self._slot_service = slot_service
         self._proposal_service = proposal_service
+        self._scheduling_service = scheduling_service
+        self._actor_driver_id: UUID | None = None
+
+    def bind_driver(self, driver_id: UUID | None) -> None:
+        self._actor_driver_id = driver_id
 
     def execute(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         if name not in ALLOWED_TOOL_NAMES:
@@ -83,7 +95,12 @@ class ToolExecutor:
         if name == ToolName.EVALUATE_FEASIBILITY.value:
             return self._evaluate_feasibility(arguments)
         if name == ToolName.GET_AVAILABLE_OPTIONS.value:
-            return self._get_available_options(_require_uuid(arguments.get("shipment_id"), "shipment_id"))
+            return self._get_available_options(
+                _require_uuid(arguments.get("shipment_id"), "shipment_id"),
+                earliest_start_local=arguments.get("earliest_start_local"),
+                leave_by_local=arguments.get("leave_by_local"),
+                timezone_name=arguments.get("timezone_name"),
+            )
         if name == ToolName.CREATE_PROPOSAL.value:
             return self._create_proposal(arguments)
         if name == ToolName.GET_PROPOSAL.value:
@@ -106,6 +123,8 @@ class ToolExecutor:
                     "A person has not acted on it yet."
                 ),
             }
+        if name == ToolName.EVALUATE_FACILITY_SCHEDULE.value:
+            return self._evaluate_facility_schedule(arguments)
         raise SetuHaulError("Tool is not allowlisted.")
 
     def _get_shipment_status(self, shipment_id: UUID) -> dict[str, Any]:
@@ -123,11 +142,19 @@ class ToolExecutor:
         shipment_id = _require_uuid(arguments.get("shipment_id"), "shipment_id")
         now = datetime.now(timezone.utc)
         new_eta = _parse_datetime(arguments.get("new_eta"))
+        timezone_name = arguments.get("timezone_name") if isinstance(arguments.get("timezone_name"), str) else None
+        eta_local = arguments.get("eta_local") if isinstance(arguments.get("eta_local"), str) else None
+        latest = self._eta_service.get_latest(shipment_id)
+        if new_eta is None and eta_local:
+            reference = latest.latest_eta or now
+            localized = localize_clock_on(_aware(reference), eta_local, timezone_name)
+            if localized is None:
+                raise SetuHaulError("The stated arrival time could not be interpreted.")
+            new_eta = localized
         if new_eta is None:
             delay = arguments.get("delay_minutes")
             if not isinstance(delay, int):
                 raise SetuHaulError("A new ETA or delay duration is required.")
-            latest = self._eta_service.get_latest(shipment_id)
             base = latest.latest_eta or now
             new_eta = _aware(base) + timedelta(minutes=delay)
         else:
@@ -177,7 +204,14 @@ class ToolExecutor:
             "warnings": result.warnings,
         }
 
-    def _get_available_options(self, shipment_id: UUID) -> dict[str, Any]:
+    def _get_available_options(
+        self,
+        shipment_id: UUID,
+        *,
+        earliest_start_local: str | None = None,
+        leave_by_local: str | None = None,
+        timezone_name: str | None = None,
+    ) -> dict[str, Any]:
         shipment = self._shipment_service.get(shipment_id)
         if shipment.destination_facility_id is None:
             raise SetuHaulError("Shipment has no destination facility assigned")
@@ -207,10 +241,38 @@ class ToolExecutor:
                         label=f"{slot.start_time.isoformat()} – {slot.end_time.isoformat()}",
                     )
                 )
+        unfiltered_count = len(options)
+        filtered: list[PresentedOption] = []
+        for option in options:
+            starts_ok = slot_starts_on_or_after(option.start_time, earliest_start_local, timezone_name)
+            ends_ok = slot_ends_on_or_before(option.end_time, leave_by_local, timezone_name)
+            if starts_ok is False or ends_ok is False:
+                continue
+            if starts_ok is None or ends_ok is None:
+                continue
+            filtered.append(option)
+        for index, option in enumerate(filtered, start=1):
+            option.index = index
+        note = None
+        if unfiltered_count and not filtered:
+            if earliest_start_local and leave_by_local:
+                note = (
+                    "There are feasible slots, but none start at or after "
+                    f"{earliest_start_local} and also end by {leave_by_local}."
+                )
+            elif earliest_start_local:
+                note = (
+                    "There are feasible slots, but none start at or after "
+                    f"{earliest_start_local}."
+                )
+            elif leave_by_local:
+                note = f"There are feasible slots, but none end by {leave_by_local}."
         return {
-            "options": [option.model_dump(mode="json") for option in options],
+            "options": [option.model_dump(mode="json") for option in filtered],
             "evaluations": evaluations,
-            "feasible_count": len(options),
+            "feasible_count": len(filtered),
+            "unfiltered_feasible_count": unfiltered_count,
+            "constraint_note": note,
         }
 
     def _create_proposal(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -225,6 +287,38 @@ class ToolExecutor:
             ),
         )
         return created.model_dump(mode="json")
+
+    def _evaluate_facility_schedule(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self._scheduling_service is None:
+            raise SetuHaulError("Facility scheduling is not configured.")
+        from app.schemas.scheduling import ScheduleEvaluateRequest
+
+        shipment_id = arguments.get("shipment_id")
+        facility_id = arguments.get("facility_id")
+        if shipment_id is not None:
+            shipment = self._shipment_service.get(_require_uuid(shipment_id, "shipment_id"))
+            if (
+                self._actor_driver_id is not None
+                and shipment.driver_id is not None
+                and shipment.driver_id != self._actor_driver_id
+            ):
+                raise SetuHaulError("Shipment is not assigned to this driver")
+            if shipment.destination_facility_id is None:
+                raise SetuHaulError("Shipment has no destination facility assigned")
+            if facility_id is not None and _require_uuid(facility_id, "facility_id") != shipment.destination_facility_id:
+                raise SetuHaulError("Facility does not match this shipment")
+            facility_id = shipment.destination_facility_id
+        elif facility_id is not None:
+            if self._actor_driver_id is not None:
+                raise SetuHaulError("Facility scheduling from a driver conversation requires a bound shipment")
+            facility_id = _require_uuid(facility_id, "facility_id")
+        else:
+            raise SetuHaulError("A shipment or facility is required")
+        result = self._scheduling_service.evaluate(facility_id, ScheduleEvaluateRequest())
+        payload = result.model_dump(mode="json")
+        payload["commits_capacity"] = False
+        payload["read_only"] = True
+        return payload
 
 
 def _aware(value: datetime) -> datetime:

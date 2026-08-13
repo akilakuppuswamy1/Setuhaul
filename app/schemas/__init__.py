@@ -30,6 +30,11 @@ from app.schemas.facility import FacilityResponse
 from app.schemas.facility_checkin import FacilityCheckinResponse
 from app.schemas.facility_rule import FacilityRuleResponse
 from app.schemas.operational_message import OperationalMessageResponse
+from app.schemas.proposal import ProposalResponse
+from app.schemas.scheduling import (
+    ScheduleEvaluateRequest,
+    ScheduleEvaluateResponse,
+)
 from app.schemas.shipment import ShipmentDetailResponse, ShipmentResponse
 from app.schemas.vehicle import VehicleResponse
 

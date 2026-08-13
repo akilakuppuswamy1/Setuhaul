@@ -28,6 +28,7 @@ from app.services.operations import (
     OperationalMessageService,
 )
 from app.services.proposal import ProposalService
+from app.services.scheduling import SchedulingService
 from app.services.shipment import ShipmentService
 from app.services.vehicle import VehicleService
 
@@ -73,3 +74,4 @@ get_chat_thread_service = _service_factory(ChatThreadService)
 get_chat_message_service = _service_factory(ChatMessageService)
 get_contact_service = _service_factory(ContactService)
 get_conversation_service = _service_factory(ConversationService)
+get_scheduling_service = _service_factory(SchedulingService)

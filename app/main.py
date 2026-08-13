@@ -1,7 +1,9 @@
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.router import router
+from app.core.config import settings
 from app.core.exceptions import ConflictError, NotFoundError, SetuHaulError
 
 app = FastAPI(
@@ -11,7 +13,8 @@ app = FastAPI(
         "Deterministic logistics and warehouse appointment coordination APIs. "
         "Step 6 adds concurrency-safe resource allocation. "
         "Step 7 adds controlled proposals with revalidation and confirmation. "
-        "Step 8 adds conversational AI that invokes existing deterministic services."
+        "Step 8 adds conversational AI that invokes existing deterministic services. "
+        "Step 9 adds an optional read-only facility scheduling ranking engine."
     ),
 )
 
@@ -30,5 +33,14 @@ async def conflict_error_handler(_request: Request, exc: ConflictError) -> JSONR
 async def setuhaul_error_handler(_request: Request, exc: SetuHaulError) -> JSONResponse:
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
+
+_cors_origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins or ["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(router)

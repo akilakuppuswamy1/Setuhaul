@@ -18,6 +18,7 @@ class ToolName(str, Enum):
     ACCEPT_PROPOSAL = "accept_proposal"
     REJECT_PROPOSAL = "reject_proposal"
     REQUEST_HUMAN_ESCALATION = "request_human_escalation"
+    EVALUATE_FACILITY_SCHEDULE = "evaluate_facility_schedule"
 
 
 ALLOWED_TOOL_NAMES = frozenset(item.value for item in ToolName)
@@ -47,6 +48,13 @@ class ToolArguments(BaseModel):
     description: str | None = None
     driver_id: UUID | None = None
     escalation_reason: str | None = None
+    facility_id: UUID | None = None
+    scheduling_start: str | None = None
+    scheduling_end: str | None = None
+    earliest_start_local: str | None = None
+    leave_by_local: str | None = None
+    eta_local: str | None = None
+    timezone_name: str | None = None
 
 
 def validate_tool_name(name: str) -> str:

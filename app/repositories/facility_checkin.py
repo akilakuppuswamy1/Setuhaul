@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import Select
+from sqlalchemy import Select, select
 
 from app.models.facility_checkin import FacilityCheckin
 from app.repositories.base import BaseRepository
@@ -41,3 +41,11 @@ class FacilityCheckinRepository(BaseRepository[FacilityCheckin]):
         page_size: int = 50,
     ) -> tuple[list[FacilityCheckin], int]:
         return self.list_paginated(page=page, page_size=page_size, facility_id=facility_id)
+
+    def list_for_facility(self, facility_id: UUID) -> list[FacilityCheckin]:
+        stmt = (
+            select(FacilityCheckin)
+            .where(FacilityCheckin.facility_id == facility_id)
+            .order_by(FacilityCheckin.occurred_at.asc(), FacilityCheckin.id.asc())
+        )
+        return list(self.session.scalars(stmt).all())

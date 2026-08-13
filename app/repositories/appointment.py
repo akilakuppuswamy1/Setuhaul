@@ -52,6 +52,19 @@ class AppointmentRepository(BaseRepository[Appointment]):
         )
         return self.session.scalar(stmt)
 
+    def list_consuming_for_facility(
+        self,
+        facility_id: UUID,
+        statuses: tuple[AppointmentStatus, ...],
+    ) -> list[Appointment]:
+        stmt = (
+            select(Appointment)
+            .where(Appointment.facility_id == facility_id)
+            .where(Appointment.status.in_(statuses))
+            .order_by(Appointment.created_at.asc(), Appointment.id.asc())
+        )
+        return list(self.session.scalars(stmt).all())
+
     def count_by_slot(
         self,
         slot_id: UUID,

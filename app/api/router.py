@@ -7,6 +7,7 @@ from app.api.drivers import router as drivers_router
 from app.api.facilities import router as facilities_router
 from app.api.operations import router as operations_router
 from app.api.proposals import router as proposals_router
+from app.api.scheduling import router as scheduling_router
 from app.api.shipments import router as shipments_router
 from app.api.vehicles import router as vehicles_router
 
@@ -24,6 +25,7 @@ router.include_router(vehicles_router)
 router.include_router(shipments_router)
 router.include_router(proposals_router)
 router.include_router(facilities_router)
+router.include_router(scheduling_router)
 router.include_router(appointments_router)
 router.include_router(operations_router)
 router.include_router(conversations_router)
