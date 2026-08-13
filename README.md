@@ -16,7 +16,77 @@ Operational decisions (slot feasibility, capacity, priority, dock compatibility,
 | 3 | Business APIs | Complete |
 | 4 | ETA + Exception Services | Complete |
 | 5 | Deterministic Feasibility Engine | Complete |
-| 6+ | Allocation, actions | Not started |
+| 6 | Deterministic Allocation | Complete |
+| 6H | Allocation Hardening | Complete |
+| 7 | Controlled Actions & Proposals | Complete |
+| 8+ | Notifications, AI layer | Not started |
+
+## Step 7 — Controlled Actions & Proposals
+
+Step 7 implements the assignment distinction between showing an option, proposing it, and confirming the operational change. Proposals are **not** allocations — creating a proposal does not consume slot capacity or confirm an appointment.
+
+### Architecture
+
+```
+HTTP → ProposalService → FeasibilityService (Step 5, read-only)
+                       → AllocationService (Step 6, on accept only)
+```
+
+Proposal records are stored as `Appointment` rows with `status=requested` and a `STEP7_PROPOSAL` marker in `notes`. This reuses the frozen Step 2 schema without migration.
+
+### State Lifecycle
+
+| API Status | Persisted As | Meaning |
+|------------|--------------|---------|
+| `proposed` | `requested` | Active proposal, not yet committed |
+| `rejected` | `rejected` | Driver/dispatcher rejected |
+| `expired` | `expired` | TTL exceeded (30 min from `created_at`) |
+| `stale` | `cancelled` + stale reason | Revalidation failed at accept time |
+| `confirmed` | separate `confirmed` appointment via Step 6 | Operational change committed |
+
+Valid transitions: `proposed → accepted → confirmed`, `proposed → rejected`, `proposed → expired`, `proposed → stale`. Terminal states cannot transition to `confirmed`.
+
+### Proposal Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/shipments/{id}/proposals` | Create proposal (feasibility-checked, no allocation) |
+| GET | `/proposals/{id}` | Retrieve proposal status |
+| POST | `/proposals/{id}/accept` | Revalidate + invoke Step 6 allocation |
+| POST | `/proposals/{id}/reject` | Reject proposal |
+
+There is **no** `PATCH /proposals/{id}` status mutation endpoint. Confirmation only occurs through controlled accept logic.
+
+### Revalidation
+
+Acceptance always re-runs Step 5 feasibility and invokes Step 6 allocation. A proposal feasible at creation time is **not** assumed valid at acceptance time. If capacity, slot status, or feasibility changed, the proposal is marked `stale` and returns HTTP 409.
+
+### Concurrency Boundary
+
+Step 7 acquires a shipment advisory lock during accept, then delegates final allocation concurrency to Step 6 (slot/dock row locks, capacity re-check). Step 7 does not implement a second locking mechanism.
+
+### AI Boundary
+
+Step 7 contains no LLM, LangChain, agent framework, or natural-language decision logic. It accepts structured requests only. A future conversational layer may call these APIs.
+
+### Known Limitations
+
+- **Hold/reservation with expiry**: `AppointmentStatus.HELD` exists but there is no `expires_at` column. Hold-with-expiry is deferred until schema support is approved.
+- **No idempotency key**: Repeated accepts on a confirmed proposal return the existing confirmation; no request deduplication key in schema.
+- **Proposal expiration**: Computed from `created_at + 30 minutes` (application TTL), not a persisted `expires_at` field.
+- **Two appointment rows on confirm**: Proposal row transitions to `cancelled`; Step 6 creates the `confirmed` appointment.
+- **Two-commit boundary**: Step 6 commits the confirmed appointment; Step 7 updates proposal state in a second commit. Matching-allocation recovery reconciles proposal state on retry if the second commit fails.
+- **No driver identity verification**: Accept/reject endpoints do not authenticate which driver is acting (pre-authentication limitation).
+
+## Step 6 — Deterministic Allocation
+
+Step 6 adds concurrency-safe, deterministic resource allocation. Allocation invokes Step 5 feasibility inside the lock and cannot bypass feasibility rules.
+
+### Allocation Endpoint
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/shipments/{id}/allocate` | Allocate slot and dock atomically |
 
 ## Step 5 — Deterministic Feasibility Engine
 

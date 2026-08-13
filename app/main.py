@@ -9,7 +9,8 @@ app = FastAPI(
     version="0.1.0",
     description=(
         "Deterministic logistics and warehouse appointment coordination APIs. "
-        "Step 6 adds concurrency-safe resource allocation."
+        "Step 6 adds concurrency-safe resource allocation. "
+        "Step 7 adds controlled proposals with revalidation and confirmation."
     ),
 )
 
