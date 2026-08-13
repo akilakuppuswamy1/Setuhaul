@@ -1,11 +1,12 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, status
 
 from app.api.deps import (
     get_chat_message_service,
     get_chat_thread_service,
     get_contact_service,
+    get_conversation_service,
     get_pagination,
 )
 from app.models.enums import ContactType
@@ -13,9 +14,47 @@ from app.schemas.chat_message import ChatMessageResponse
 from app.schemas.chat_thread import ChatThreadResponse
 from app.schemas.common import PaginatedResponse
 from app.schemas.contact import ContactResponse
+from app.schemas.conversation import (
+    ConversationCreateRequest,
+    ConversationCreateResponse,
+    ConversationMessageRequest,
+    ConversationMessageResponse,
+)
+from app.services.conversation import ConversationService
 from app.services.conversations import ChatMessageService, ChatThreadService, ContactService
 
 router = APIRouter(tags=["Conversations"])
+
+
+@router.post(
+    "/conversations",
+    response_model=ConversationCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a driver conversation thread",
+    responses={404: {"description": "Driver or shipment not found"}},
+)
+def create_conversation(
+    payload: ConversationCreateRequest,
+    service: ConversationService = Depends(get_conversation_service),
+) -> ConversationCreateResponse:
+    return service.create_thread(payload)
+
+
+@router.post(
+    "/conversations/{thread_id}/messages",
+    response_model=ConversationMessageResponse,
+    summary="Send a driver message and receive a conversational response",
+    responses={
+        404: {"description": "Conversation thread not found"},
+        422: {"description": "Malformed request"},
+    },
+)
+def post_conversation_message(
+    thread_id: UUID,
+    payload: ConversationMessageRequest,
+    service: ConversationService = Depends(get_conversation_service),
+) -> ConversationMessageResponse:
+    return service.handle_message(thread_id, payload)
 
 
 @router.get(

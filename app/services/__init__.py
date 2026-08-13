@@ -7,6 +7,7 @@ from app.services.appointment import (
     FacilityRuleService,
 )
 from app.services.carrier import CarrierService
+from app.services.conversation import ConversationService
 from app.services.conversations import ChatMessageService, ChatThreadService, ContactService
 from app.services.driver import DriverService
 from app.services.facility import FacilityService
@@ -26,6 +27,7 @@ __all__ = [
     "ChatMessageService",
     "ChatThreadService",
     "ContactService",
+    "ConversationService",
     "DockService",
     "DriverExceptionService",
     "DriverService",

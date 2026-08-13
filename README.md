@@ -19,7 +19,78 @@ Operational decisions (slot feasibility, capacity, priority, dock compatibility,
 | 6 | Deterministic Allocation | Complete |
 | 6H | Allocation Hardening | Complete |
 | 7 | Controlled Actions & Proposals | Complete |
-| 8+ | Notifications, AI layer | Not started |
+| 8 | Conversational AI + tool orchestration | Complete |
+| 9+ | Notifications / remaining assignment work | Not started |
+
+## Step 8 — Conversational AI
+
+Step 8 adds a driver-facing conversational layer. The LLM (or a deterministic fake parser in tests) is responsible for **language understanding and conversation**. Existing Step 5/6/7 services remain the only authority for feasibility, allocation, and booking confirmation.
+
+```
+Driver free text
+  → Conversation API
+  → Intent / entity / context (app/ai)
+  → Clarification if required
+  → Allowlisted tools
+  → ETA / Exception / Feasibility / Proposal services
+  → Structured result
+  → Driver-facing explanation
+```
+
+The LLM cannot independently decide feasibility, capacity, dock compatibility, booking availability, allocation, or final commitment. There is no AI booking pathway: confirmation always flows through Step 7 proposal accept → Step 5 revalidation → Step 6 allocation.
+
+LangChain and LangGraph are **not** used.
+
+### Conversation endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/conversations` | Create a `ChatThread` for a driver (optional shipment) |
+| POST | `/conversations/{thread_id}/messages` | Handle a free-text driver message |
+
+Existing Step 3 read APIs (`GET /chat-threads`, `GET /chat-messages`) are unchanged.
+
+### Conversation context
+
+Threads and messages reuse frozen Step 2 `ChatThread` / `ChatMessage` tables. Operational context (shipment, presented options, proposal, pending clarification, escalation) is reconstructed from `ChatMessage.metadata` JSON plus thread foreign keys. Secrets and system prompts are not stored.
+
+### Tool registry
+
+Allowlisted tools (no arbitrary function/SQL execution):
+
+| Tool | Deterministic backend |
+|------|------------------------|
+| `get_shipment_status` | `ShipmentService` + latest ETA |
+| `record_eta_update` | `ETAUpdateService` |
+| `create_driver_exception` | `DriverExceptionService` |
+| `evaluate_feasibility` | `FeasibilityService` (Step 5) |
+| `get_available_options` | open slots + Step 5 evaluation |
+| `create_proposal` / `get_proposal` / `accept_proposal` / `reject_proposal` | `ProposalService` (Step 7) |
+| `request_human_escalation` | conversation metadata + `[ESCALATED]` thread subject |
+
+### LLM provider
+
+Configuration (environment variables, never committed):
+
+```
+LLM_PROVIDER=fake
+LLM_API_KEY=
+LLM_MODEL=openai/gpt-4o-mini
+LLM_BASE_URL=https://openrouter.ai/api/v1
+```
+
+`LLM_PROVIDER=fake` (default) uses `FakeLLMProvider` — keyword/structured parsing, no network. `LLM_PROVIDER=openrouter` uses `OpenRouterProvider` only for language understanding. If OpenRouter is selected but `LLM_API_KEY` is empty, the app falls back to the fake provider. Unit tests never call a live model.
+
+### Human escalation
+
+Escalation is recorded on the conversation (message metadata and thread subject). A person has **not** already acted. Full human-task assignment, SLA, and resolution workflow are not in the frozen schema and are not implemented in Step 8.
+
+### Known limitations
+
+- No new conversation tables or migrations.
+- Escalation is a flag/record, not a dispatch/notification platform.
+- Driver identity is still not authenticated (pre-authentication limitation from earlier steps).
+
 
 ## Step 7 — Controlled Actions & Proposals
 
@@ -242,6 +313,7 @@ With the server running:
 
 ```
 app/
+├── ai/            # Conversational understanding and allowlisted tool orchestration (Step 8)
 ├── core/          # Configuration, database, shared infrastructure
 ├── models/        # SQLAlchemy database models (Step 2 — frozen)
 ├── schemas/       # Pydantic request/response schemas
@@ -274,6 +346,8 @@ pip install -r requirements.txt
 copy .env.example .env        # Windows
 # cp .env.example .env        # macOS/Linux
 ```
+
+`LLM_PROVIDER` defaults to `fake`. Set `LLM_PROVIDER=openrouter` and `LLM_API_KEY` only when you want live language understanding. Tests do not require an API key.
 
 ### 4. Apply migrations
 

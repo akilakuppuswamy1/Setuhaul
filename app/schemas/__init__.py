@@ -7,6 +7,12 @@ from app.schemas.chat_message import ChatMessageResponse
 from app.schemas.chat_thread import ChatThreadResponse
 from app.schemas.common import PaginatedResponse, PaginationParams
 from app.schemas.contact import ContactResponse
+from app.schemas.conversation import (
+    ConversationCreateRequest,
+    ConversationCreateResponse,
+    ConversationMessageRequest,
+    ConversationMessageResponse,
+)
 from app.schemas.dock import DockResponse
 from app.schemas.driver import DriverResponse
 from app.schemas.driver_exception import (
@@ -34,6 +40,10 @@ __all__ = [
     "ChatMessageResponse",
     "ChatThreadResponse",
     "ContactResponse",
+    "ConversationCreateRequest",
+    "ConversationCreateResponse",
+    "ConversationMessageRequest",
+    "ConversationMessageResponse",
     "DockResponse",
     "DriverExceptionCreate",
     "DriverExceptionDetailResponse",

@@ -1,9 +1,10 @@
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import NotFoundError
-from app.models.enums import ContactType
+from app.models.enums import ChatThreadStatus, ContactType, MessageDirection, SenderType
 from app.repositories.chat_message import ChatMessageRepository
 from app.repositories.chat_thread import ChatThreadRepository
 from app.repositories.contact import ContactRepository
@@ -11,17 +12,57 @@ from app.schemas.chat_message import ChatMessageResponse
 from app.schemas.chat_thread import ChatThreadResponse
 from app.schemas.common import PaginatedResponse
 from app.schemas.contact import ContactResponse
-from app.services.helpers import to_paginated
+from app.services.helpers import safe_commit, to_paginated
 
 
 class ChatThreadService:
     def __init__(self, session: Session) -> None:
+        self._session = session
         self._repo = ChatThreadRepository(session)
 
     def get(self, thread_id: UUID) -> ChatThreadResponse:
         thread = self._repo.get_by_id(thread_id)
         if thread is None:
             raise NotFoundError(f"Chat thread {thread_id} not found")
+        return ChatThreadResponse.model_validate(thread)
+
+    def create(
+        self,
+        *,
+        driver_id: UUID | None = None,
+        shipment_id: UUID | None = None,
+        subject: str | None = None,
+    ) -> ChatThreadResponse:
+        thread = self._repo.create(
+            driver_id=driver_id,
+            shipment_id=shipment_id,
+            subject=subject,
+            status=ChatThreadStatus.OPEN,
+        )
+        safe_commit(self._session)
+        self._session.refresh(thread)
+        return ChatThreadResponse.model_validate(thread)
+
+    def update_links(
+        self,
+        thread_id: UUID,
+        *,
+        shipment_id: UUID | None = None,
+        driver_exception_id: UUID | None = None,
+        subject: str | None = None,
+    ) -> ChatThreadResponse:
+        thread = self._repo.get_by_id(thread_id)
+        if thread is None:
+            raise NotFoundError(f"Chat thread {thread_id} not found")
+        if shipment_id is not None:
+            thread.shipment_id = shipment_id
+        if driver_exception_id is not None:
+            thread.driver_exception_id = driver_exception_id
+        if subject is not None:
+            thread.subject = subject
+        self._session.flush()
+        safe_commit(self._session)
+        self._session.refresh(thread)
         return ChatThreadResponse.model_validate(thread)
 
     def list(
@@ -49,6 +90,7 @@ class ChatThreadService:
 
 class ChatMessageService:
     def __init__(self, session: Session) -> None:
+        self._session = session
         self._repo = ChatMessageRepository(session)
 
     def get(self, message_id: UUID) -> ChatMessageResponse:
@@ -56,6 +98,31 @@ class ChatMessageService:
         if message is None:
             raise NotFoundError(f"Chat message {message_id} not found")
         return ChatMessageResponse.model_validate(message)
+
+    def create(
+        self,
+        *,
+        chat_thread_id: UUID,
+        sender_type: SenderType,
+        content: str,
+        direction: MessageDirection,
+        metadata: dict | None = None,
+    ) -> ChatMessageResponse:
+        message = self._repo.create(
+            chat_thread_id=chat_thread_id,
+            sender_type=sender_type,
+            content=content,
+            sent_at=datetime.now(timezone.utc),
+            direction=direction,
+            metadata_=metadata,
+        )
+        safe_commit(self._session)
+        self._session.refresh(message)
+        return ChatMessageResponse.model_validate(message)
+
+    def list_recent(self, chat_thread_id: UUID, *, limit: int = 40) -> list[ChatMessageResponse]:
+        items = self._repo.list_recent(chat_thread_id, limit=limit)
+        return [ChatMessageResponse.model_validate(item) for item in items]
 
     def list(
         self,

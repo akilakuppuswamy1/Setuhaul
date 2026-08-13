@@ -81,6 +81,10 @@ class AppointmentSlotService:
             response_model=AppointmentSlotResponse,
         )
 
+    def list_open_for_facility(self, facility_id: UUID) -> list[AppointmentSlotResponse]:
+        items = self._repo.list_open_by_facility(facility_id)
+        return [AppointmentSlotResponse.model_validate(item) for item in items]
+
 
 class DockService:
     def __init__(self, session: Session) -> None:

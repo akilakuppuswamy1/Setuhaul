@@ -3,6 +3,7 @@ from uuid import UUID
 from sqlalchemy import Select, select
 
 from app.models.chat_thread import ChatThread
+from app.models.enums import ChatThreadStatus
 from app.repositories.base import BaseRepository
 
 
@@ -40,3 +41,24 @@ class ChatThreadRepository(BaseRepository[ChatThread]):
             .order_by(*self.order_by_columns)
         )
         return list(self.session.scalars(stmt).all())
+
+    def create(
+        self,
+        *,
+        driver_id: UUID | None = None,
+        shipment_id: UUID | None = None,
+        driver_exception_id: UUID | None = None,
+        subject: str | None = None,
+        status: ChatThreadStatus = ChatThreadStatus.OPEN,
+    ) -> ChatThread:
+        entity = ChatThread(
+            driver_id=driver_id,
+            shipment_id=shipment_id,
+            driver_exception_id=driver_exception_id,
+            subject=subject,
+            status=status,
+        )
+        self.session.add(entity)
+        self.session.flush()
+        self.session.refresh(entity)
+        return entity

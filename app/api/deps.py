@@ -16,6 +16,7 @@ from app.services.appointment import (
     FacilityRuleService,
 )
 from app.services.carrier import CarrierService
+from app.services.conversation import ConversationService
 from app.services.conversations import ChatMessageService, ChatThreadService, ContactService
 from app.services.driver import DriverService
 from app.services.facility import FacilityService
@@ -71,3 +72,4 @@ get_operational_message_service = _service_factory(OperationalMessageService)
 get_chat_thread_service = _service_factory(ChatThreadService)
 get_chat_message_service = _service_factory(ChatMessageService)
 get_contact_service = _service_factory(ContactService)
+get_conversation_service = _service_factory(ConversationService)
