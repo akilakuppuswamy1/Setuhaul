@@ -6,29 +6,83 @@ SetuHaul is a deterministic logistics and warehouse appointment coordination sys
 
 Operational decisions (slot feasibility, capacity, priority, dock compatibility, appointment allocation, and booking confirmation) are implemented with explicit Python rules—not generative AI or LLM services. Every decision path must be reproducible and testable.
 
-## Step 1 Scope
+## Project Status
 
-This repository contains the **project foundation only**:
+| Step | Description | Status |
+|------|-------------|--------|
+| 1 | Foundation | Complete |
+| 2 | Database Model & System of Record | Complete |
+| 2H | Database Hardening | Complete |
+| 3 | Business APIs | Complete |
+| 4+ | ETA, feasibility, allocation, actions | Not started |
 
-- FastAPI application skeleton
-- Configuration via environment variables (`pydantic-settings`)
-- SQLAlchemy database setup (no tables yet)
-- Alembic migration scaffolding
-- PostgreSQL via Docker Compose
-- Health check endpoint and basic tests
+## Step 3 — Business APIs
 
-Business modules (shipments, appointments, scheduling, allocation, etc.) will be added in later steps.
+Step 3 exposes the frozen domain model through read-only REST APIs. The API layer retrieves facts and historical records; it does **not** perform operational decision logic (no feasibility, allocation, ETA prediction, or appointment recommendations).
+
+### API Architecture
+
+```
+HTTP Request → FastAPI Router → Pydantic Schema → Service → Repository → SQLAlchemy → PostgreSQL
+```
+
+Layers:
+
+- `app/api/` — route handlers and dependency injection
+- `app/schemas/` — Pydantic request/response models
+- `app/services/` — orchestration and 404 handling
+- `app/repositories/` — database queries, filters, pagination
+
+### Endpoint Categories
+
+| Category | Endpoints |
+|----------|-----------|
+| Core entities | `/carriers`, `/drivers`, `/vehicles`, `/shipments`, `/facilities` |
+| Facility resources | `/docks`, `/facility-rules`, `/appointment-slots`, `/appointments` |
+| Conversations | `/chat-threads`, `/chat-messages`, `/contacts` |
+| Operations | `/eta-updates`, `/driver-exceptions`, `/facility-checkins`, `/operational-messages` |
+| Shipment history | `/shipments/{id}/eta-updates`, `/exceptions`, `/appointments`, `/facility-checkins`, `/chat-threads` |
+| Facility relations | `/facilities/{id}/docks`, `/rules`, `/appointment-slots`, `/check-ins` |
+
+All collection endpoints support `?page=1&page_size=50` (max 100) with deterministic ordering.
+
+### Example API Calls
+
+```bash
+# Health check
+curl http://localhost:8000/health
+
+# List shipments filtered by status
+curl "http://localhost:8000/shipments?status=in_transit&page=1&page_size=10"
+
+# Get shipment with latest ETA (derived from ETAUpdate history)
+curl http://localhost:8000/shipments/{shipment_id}
+
+# Shipment ETA history (source of truth for ETA)
+curl http://localhost:8000/shipments/{shipment_id}/eta-updates
+
+# Facility docks
+curl http://localhost:8000/facilities/{facility_id}/docks
+```
+
+### OpenAPI / Swagger
+
+With the server running:
+
+- Swagger UI: [http://localhost:8000/docs](http://localhost:8000/docs)
+- ReDoc: [http://localhost:8000/redoc](http://localhost:8000/redoc)
+- OpenAPI JSON: [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json)
 
 ## Project Structure
 
 ```
 app/
 ├── core/          # Configuration, database, shared infrastructure
-├── models/        # SQLAlchemy database models
+├── models/        # SQLAlchemy database models (Step 2 — frozen)
 ├── schemas/       # Pydantic request/response schemas
 ├── repositories/  # Database access
-├── services/      # Application/business services
-├── engines/       # Deterministic decision engines
+├── services/      # Application services
+├── engines/       # Deterministic decision engines (future steps)
 └── api/           # FastAPI routes
 ```
 
@@ -56,7 +110,13 @@ copy .env.example .env        # Windows
 # cp .env.example .env        # macOS/Linux
 ```
 
-### 4. Start the API
+### 4. Apply migrations
+
+```bash
+alembic upgrade head
+```
+
+### 5. Start the API
 
 ```bash
 uvicorn app.main:app --reload
@@ -67,14 +127,21 @@ Health check: [http://localhost:8000/health](http://localhost:8000/health)
 ## Run Tests
 
 ```bash
-pytest
+pytest -v
+```
+
+API and model tests use an in-memory SQLite database. Migration tests require a running PostgreSQL instance (see `docker compose up -d`).
+
+```bash
+# API and model tests only (no PostgreSQL required)
+pytest tests/test_api.py tests/test_health.py tests/test_models.py tests/test_models_hardening.py -v
 ```
 
 ## Database Migrations
 
-Alembic is initialized but no migrations exist yet. When models are added in later steps:
+Alembic manages schema migrations. Step 3 does not change the database schema.
 
 ```bash
-alembic revision --autogenerate -m "description"
-alembic upgrade head
+alembic upgrade head    # apply migrations
+alembic check           # verify no schema drift
 ```

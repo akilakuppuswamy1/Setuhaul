@@ -8,6 +8,7 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
 import app.models  # noqa: F401
+from app.core.config import settings
 from app.core.database import Base
 
 EXPECTED_DOMAIN_TABLES = {
@@ -31,10 +32,7 @@ EXPECTED_DOMAIN_TABLES = {
 
 
 def _postgres_test_url() -> str | None:
-    url = os.environ.get(
-        "DATABASE_URL",
-        "postgresql+psycopg://setuhaul:setuhaul@localhost:5433/setuhaul",
-    )
+    url = os.environ.get("DATABASE_URL", settings.database_url)
     if not url.startswith("postgresql"):
         return None
     try:
