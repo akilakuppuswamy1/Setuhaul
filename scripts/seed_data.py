@@ -292,5 +292,6 @@ def seed_demo_data(session: Session) -> dict[str, object]:
         "slots": slots,
         "shipments": shipments,
         "appointments": appointments,
+        "exception": exception,
         "thread": thread,
     }

@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import Select
@@ -33,3 +34,26 @@ class ETAUpdateRepository(BaseRepository[ETAUpdate]):
         page_size: int = 50,
     ) -> tuple[list[ETAUpdate], int]:
         return self.list_paginated(page=page, page_size=page_size, shipment_id=shipment_id)
+
+    def create(
+        self,
+        *,
+        shipment_id: UUID,
+        previous_eta: datetime | None,
+        new_eta: datetime,
+        update_timestamp: datetime,
+        source: ETASource,
+        reason: str | None = None,
+    ) -> ETAUpdate:
+        entity = ETAUpdate(
+            shipment_id=shipment_id,
+            previous_eta=previous_eta,
+            new_eta=new_eta,
+            update_timestamp=update_timestamp,
+            source=source,
+            reason=reason,
+        )
+        self.session.add(entity)
+        self.session.flush()
+        self.session.refresh(entity)
+        return entity

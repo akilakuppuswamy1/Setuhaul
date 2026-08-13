@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import Select
+from sqlalchemy import Select, select
 
 from app.models.chat_thread import ChatThread
 from app.repositories.base import BaseRepository
@@ -32,3 +32,11 @@ class ChatThreadRepository(BaseRepository[ChatThread]):
         page_size: int = 50,
     ) -> tuple[list[ChatThread], int]:
         return self.list_paginated(page=page, page_size=page_size, shipment_id=shipment_id)
+
+    def list_by_driver_exception(self, driver_exception_id: UUID) -> list[ChatThread]:
+        stmt = (
+            select(ChatThread)
+            .where(ChatThread.driver_exception_id == driver_exception_id)
+            .order_by(*self.order_by_columns)
+        )
+        return list(self.session.scalars(stmt).all())

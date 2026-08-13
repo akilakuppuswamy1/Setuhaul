@@ -3,6 +3,7 @@
 from typing import TypeVar
 
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from app.schemas.common import PaginatedResponse
 
@@ -24,3 +25,12 @@ def to_paginated(
         page_size=page_size,
         total=total,
     )
+
+
+def safe_commit(session: Session) -> None:
+    """Commit the session; roll back on persistence failure."""
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise

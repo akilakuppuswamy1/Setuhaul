@@ -1,9 +1,10 @@
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import Select
 
 from app.models.driver_exception import DriverException
-from app.models.enums import ExceptionStatus
+from app.models.enums import ExceptionStatus, ExceptionType
 from app.repositories.base import BaseRepository
 
 
@@ -36,3 +37,26 @@ class DriverExceptionRepository(BaseRepository[DriverException]):
         page_size: int = 50,
     ) -> tuple[list[DriverException], int]:
         return self.list_paginated(page=page, page_size=page_size, shipment_id=shipment_id)
+
+    def create(
+        self,
+        *,
+        shipment_id: UUID,
+        driver_id: UUID | None,
+        exception_type: ExceptionType,
+        description: str | None,
+        occurred_at: datetime,
+        status: ExceptionStatus = ExceptionStatus.OPEN,
+    ) -> DriverException:
+        entity = DriverException(
+            shipment_id=shipment_id,
+            driver_id=driver_id,
+            exception_type=exception_type,
+            description=description,
+            status=status,
+            occurred_at=occurred_at,
+        )
+        self.session.add(entity)
+        self.session.flush()
+        self.session.refresh(entity)
+        return entity

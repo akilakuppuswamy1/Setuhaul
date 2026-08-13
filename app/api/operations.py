@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, status
 
 from app.api.deps import (
     get_driver_exception_service,
@@ -11,7 +11,11 @@ from app.api.deps import (
 )
 from app.models.enums import ETASource, ExceptionStatus
 from app.schemas.common import PaginatedResponse
-from app.schemas.driver_exception import DriverExceptionResponse
+from app.schemas.driver_exception import (
+    DriverExceptionDetailResponse,
+    DriverExceptionResponse,
+    DriverExceptionStatusUpdate,
+)
 from app.schemas.eta_update import ETAUpdateResponse
 from app.schemas.facility_checkin import FacilityCheckinResponse
 from app.schemas.operational_message import OperationalMessageResponse
@@ -77,15 +81,33 @@ def list_driver_exceptions(
 
 @router.get(
     "/driver-exceptions/{exception_id}",
-    response_model=DriverExceptionResponse,
-    summary="Get driver exception by ID",
+    response_model=DriverExceptionDetailResponse,
+    summary="Get driver exception by ID with operational context",
     responses={404: {"description": "Driver exception not found"}},
 )
 def get_driver_exception(
     exception_id: UUID,
     service: DriverExceptionService = Depends(get_driver_exception_service),
+) -> DriverExceptionDetailResponse:
+    return service.get_detail(exception_id)
+
+
+@router.patch(
+    "/driver-exceptions/{exception_id}",
+    response_model=DriverExceptionResponse,
+    summary="Update driver exception status",
+    responses={
+        404: {"description": "Driver exception not found"},
+        400: {"description": "Invalid status transition"},
+        422: {"description": "Invalid payload"},
+    },
+)
+def update_driver_exception_status(
+    exception_id: UUID,
+    payload: DriverExceptionStatusUpdate,
+    service: DriverExceptionService = Depends(get_driver_exception_service),
 ) -> DriverExceptionResponse:
-    return service.get(exception_id)
+    return service.update_status(exception_id, payload)
 
 
 @router.get(

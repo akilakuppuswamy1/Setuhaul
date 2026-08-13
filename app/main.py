@@ -9,7 +9,7 @@ app = FastAPI(
     version="0.1.0",
     description=(
         "Deterministic logistics and warehouse appointment coordination APIs. "
-        "Step 3 exposes business data retrieval only — no operational decision logic."
+        "Step 4 adds operational ETA and driver exception services."
     ),
 )
 

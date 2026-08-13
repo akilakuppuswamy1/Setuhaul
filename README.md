@@ -14,7 +14,23 @@ Operational decisions (slot feasibility, capacity, priority, dock compatibility,
 | 2 | Database Model & System of Record | Complete |
 | 2H | Database Hardening | Complete |
 | 3 | Business APIs | Complete |
-| 4+ | ETA, feasibility, allocation, actions | Not started |
+| 4 | ETA + Exception Services | Complete |
+| 5+ | Feasibility, allocation, actions | Not started |
+
+## Step 4 — ETA + Exception Services
+
+Step 4 adds deterministic operational write services for ETA updates and driver exceptions. ETA history remains immutable in `ETAUpdate`; the latest ETA is always derived from history, never stored on `Shipment`.
+
+### Operational Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/shipments/{id}/eta-updates` | Record a new ETA update |
+| GET | `/shipments/{id}/latest-eta` | Latest ETA derived from history |
+| POST | `/shipments/{id}/exceptions` | Report a driver exception |
+| PATCH | `/driver-exceptions/{id}` | Update exception status (acknowledge/resolve) |
+
+Existing Step 3 read endpoints (`GET /eta-updates`, `GET /shipments/{id}/eta-updates`, etc.) remain unchanged.
 
 ## Step 3 — Business APIs
 

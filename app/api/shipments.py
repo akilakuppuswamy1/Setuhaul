@@ -1,16 +1,22 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, status
 
-from app.api.deps import get_pagination, get_shipment_service
+from app.api.deps import (
+    get_driver_exception_service,
+    get_eta_update_service,
+    get_pagination,
+    get_shipment_service,
+)
 from app.models.enums import ShipmentStatus
 from app.schemas.appointment import AppointmentResponse
 from app.schemas.chat_thread import ChatThreadResponse
 from app.schemas.common import PaginatedResponse
-from app.schemas.driver_exception import DriverExceptionResponse
-from app.schemas.eta_update import ETAUpdateResponse
+from app.schemas.driver_exception import DriverExceptionCreate, DriverExceptionResponse
+from app.schemas.eta_update import ETAUpdateCreate, ETAUpdateResponse, LatestETAResponse
 from app.schemas.facility_checkin import FacilityCheckinResponse
 from app.schemas.shipment import ShipmentDetailResponse, ShipmentResponse
+from app.services.operations import DriverExceptionService, ETAUpdateService
 from app.services.shipment import ShipmentService
 
 router = APIRouter(prefix="/shipments", tags=["Shipments"])
@@ -70,6 +76,37 @@ def list_shipment_eta_updates(
     return service.list_eta_updates(shipment_id, page=page, page_size=page_size)
 
 
+@router.post(
+    "/{shipment_id}/eta-updates",
+    response_model=ETAUpdateResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record an ETA update for a shipment",
+    responses={
+        404: {"description": "Shipment not found"},
+        422: {"description": "Invalid ETA payload"},
+    },
+)
+def create_shipment_eta_update(
+    shipment_id: UUID,
+    payload: ETAUpdateCreate,
+    service: ETAUpdateService = Depends(get_eta_update_service),
+) -> ETAUpdateResponse:
+    return service.create(shipment_id, payload)
+
+
+@router.get(
+    "/{shipment_id}/latest-eta",
+    response_model=LatestETAResponse,
+    summary="Get latest ETA derived from update history",
+    responses={404: {"description": "Shipment not found"}},
+)
+def get_shipment_latest_eta(
+    shipment_id: UUID,
+    service: ETAUpdateService = Depends(get_eta_update_service),
+) -> LatestETAResponse:
+    return service.get_latest(shipment_id)
+
+
 @router.get(
     "/{shipment_id}/exceptions",
     response_model=PaginatedResponse[DriverExceptionResponse],
@@ -83,6 +120,24 @@ def list_shipment_exceptions(
 ) -> PaginatedResponse[DriverExceptionResponse]:
     page, page_size = pagination
     return service.list_exceptions(shipment_id, page=page, page_size=page_size)
+
+
+@router.post(
+    "/{shipment_id}/exceptions",
+    response_model=DriverExceptionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Report a driver exception for a shipment",
+    responses={
+        404: {"description": "Shipment or driver not found"},
+        422: {"description": "Invalid exception payload"},
+    },
+)
+def create_shipment_exception(
+    shipment_id: UUID,
+    payload: DriverExceptionCreate,
+    service: DriverExceptionService = Depends(get_driver_exception_service),
+) -> DriverExceptionResponse:
+    return service.create(shipment_id, payload)
 
 
 @router.get(
