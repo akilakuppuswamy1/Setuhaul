@@ -1,15 +1,14 @@
 """Migration integrity tests for Step 2 schema hardening."""
 
-import os
-
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect
 
 import app.models  # noqa: F401
-from app.core.config import settings
 from app.core.database import Base
+from tests.db import postgres_test_url as _postgres_test_url
+from tests.db import reset_public_schema
 
 EXPECTED_DOMAIN_TABLES = {
     "carriers",
@@ -29,20 +28,6 @@ EXPECTED_DOMAIN_TABLES = {
     "contacts",
     "operational_messages",
 }
-
-
-def _postgres_test_url() -> str | None:
-    url = os.environ.get("DATABASE_URL", settings.database_url)
-    if not url.startswith("postgresql"):
-        return None
-    try:
-        engine = create_engine(url)
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
-        engine.dispose()
-        return url
-    except Exception:
-        return None
 
 
 @pytest.fixture
@@ -66,8 +51,7 @@ def test_migration_upgrade_creates_domain_tables_only(
 ) -> None:
     engine = create_engine(postgres_url)
     with engine.begin() as connection:
-        connection.execute(text("DROP SCHEMA public CASCADE"))
-        connection.execute(text("CREATE SCHEMA public"))
+        reset_public_schema(connection)
 
     command.upgrade(alembic_config, "head")
 
@@ -86,8 +70,7 @@ def test_migration_downgrade_and_upgrade_round_trip(
 ) -> None:
     engine = create_engine(postgres_url)
     with engine.begin() as connection:
-        connection.execute(text("DROP SCHEMA public CASCADE"))
-        connection.execute(text("CREATE SCHEMA public"))
+        reset_public_schema(connection)
 
     command.upgrade(alembic_config, "head")
     command.downgrade(alembic_config, "base")

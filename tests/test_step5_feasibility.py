@@ -126,6 +126,28 @@ class TestFeasibilityEngineUnit:
         assert result.feasible is True
         assert result.blocking_reasons == ()
 
+    def test_early_arrival_may_wait(self) -> None:
+        ctx = FeasibilityContext(**{**_feasible_context().__dict__, "latest_eta": _utc(2026, 8, 13, 11, 15)})
+        result = FeasibilityEngine().evaluate(ctx)
+        eta_rule = next(rule for rule in result.rule_results if rule.rule_id == "ETA-001")
+        assert eta_rule.passed is True
+        assert eta_rule.facts["arrival_relation"] == "before_window"
+        assert result.feasible is True
+
+    def test_arrival_during_slot_window(self) -> None:
+        result = FeasibilityEngine().evaluate(_feasible_context())
+        eta_rule = next(rule for rule in result.rule_results if rule.rule_id == "ETA-001")
+        assert eta_rule.passed is True
+        assert eta_rule.facts["arrival_relation"] == "during_window"
+
+    def test_arrival_after_slot_window(self) -> None:
+        ctx = FeasibilityContext(**{**_feasible_context().__dict__, "latest_eta": _utc(2026, 8, 13, 13, 30)})
+        result = FeasibilityEngine().evaluate(ctx)
+        eta_rule = next(rule for rule in result.rule_results if rule.rule_id == "ETA-001")
+        assert eta_rule.passed is False
+        assert eta_rule.facts["arrival_relation"] == "after_window"
+        assert result.feasible is False
+
     def test_inactive_shipment_blocks(self) -> None:
         ctx = _feasible_context()
         ctx = FeasibilityContext(

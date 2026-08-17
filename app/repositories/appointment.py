@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import Select, func, select, text
@@ -82,6 +83,23 @@ class AppointmentRepository(BaseRepository[Appointment]):
             stmt = stmt.where(Appointment.shipment_id != exclude_shipment_id)
         return int(self.session.scalar(stmt) or 0)
 
+    def count_by_dock(
+        self,
+        dock_id: UUID,
+        statuses: tuple[AppointmentStatus, ...],
+        *,
+        exclude_appointment_id: UUID | None = None,
+    ) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(Appointment)
+            .where(Appointment.dock_id == dock_id)
+            .where(Appointment.status.in_(statuses))
+        )
+        if exclude_appointment_id is not None:
+            stmt = stmt.where(Appointment.id != exclude_appointment_id)
+        return int(self.session.scalar(stmt) or 0)
+
     def count_by_facility_between(
         self,
         facility_id: UUID,
@@ -133,12 +151,36 @@ class AppointmentRepository(BaseRepository[Appointment]):
         if dialect == "postgresql":
             self.session.execute(
                 text("SELECT pg_advisory_xact_lock(:lock_key)"),
-                {"lock_key": shipment_id.int % (2**63)},
+                {"lock_key": self._shipment_lock_key(shipment_id)},
             )
         else:
-            # SQLite fallback for unit tests: row-level shipment lock.
-            from app.models.shipment import Shipment
+            self._lock_shipment_row(shipment_id)
 
-            self.session.execute(
-                select(Shipment).where(Shipment.id == shipment_id).with_for_update()
-            )
+    def try_acquire_shipment_advisory_lock(self, shipment_id: UUID) -> bool:
+        """Non-blocking shipment guard. False means another transaction holds the lock."""
+        dialect = self.session.get_bind().dialect.name
+        if dialect == "postgresql":
+            acquired = self.session.execute(
+                text("SELECT pg_try_advisory_xact_lock(:lock_key)"),
+                {"lock_key": self._shipment_lock_key(shipment_id)},
+            ).scalar()
+            return bool(acquired)
+        self._lock_shipment_row(shipment_id)
+        return True
+
+    def get_by_id_locked(self, entity_id: UUID) -> Appointment | None:
+        """Load an appointment row and hold it for the rest of the transaction."""
+        stmt = select(Appointment).where(Appointment.id == entity_id).with_for_update()
+        return self.session.scalar(stmt)
+
+    @staticmethod
+    def _shipment_lock_key(shipment_id: UUID) -> int:
+        return shipment_id.int % (2**63)
+
+    def _lock_shipment_row(self, shipment_id: UUID) -> None:
+        # SQLite fallback for unit tests: row-level shipment lock.
+        from app.models.shipment import Shipment
+
+        self.session.execute(
+            select(Shipment).where(Shipment.id == shipment_id).with_for_update()
+        )

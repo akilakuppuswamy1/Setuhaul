@@ -8,6 +8,7 @@ from app.repositories.appointment import AppointmentRepository
 from app.repositories.appointment_slot import AppointmentSlotRepository
 from app.repositories.dock import DockRepository
 from app.repositories.facility_rule import FacilityRuleRepository
+from app.repositories.shipment import ShipmentRepository
 from app.schemas.appointment import AppointmentResponse
 from app.schemas.appointment_slot import AppointmentSlotResponse
 from app.schemas.common import PaginatedResponse
@@ -19,12 +20,13 @@ from app.services.helpers import to_paginated
 class AppointmentService:
     def __init__(self, session: Session) -> None:
         self._repo = AppointmentRepository(session)
+        self._shipments = ShipmentRepository(session)
 
     def get(self, appointment_id: UUID) -> AppointmentResponse:
         appointment = self._repo.get_by_id(appointment_id)
         if appointment is None:
             raise NotFoundError(f"Appointment {appointment_id} not found")
-        return AppointmentResponse.model_validate(appointment)
+        return self._to_response(appointment)
 
     def list(
         self,
@@ -42,13 +44,18 @@ class AppointmentService:
             facility_id=facility_id,
             appointment_status=appointment_status,
         )
-        return to_paginated(
-            items,
+        return PaginatedResponse(
+            items=[self._to_response(item) for item in items],
             page=page,
             page_size=page_size,
             total=total,
-            response_model=AppointmentResponse,
         )
+
+    def _to_response(self, appointment) -> AppointmentResponse:
+        payload = AppointmentResponse.model_validate(appointment)
+        shipment = self._shipments.get_by_id(appointment.shipment_id)
+        number = shipment.shipment_number if shipment is not None else None
+        return payload.model_copy(update={"shipment_number": number})
 
 
 class AppointmentSlotService:

@@ -8,6 +8,7 @@ export function formatDateTime(value?: string | null, timeZone?: string | null):
     month: "short",
     day: "numeric",
     timeZone: timeZone || undefined,
+    ...(timeZone ? { timeZoneName: "short" as const } : {}),
   }).format(date);
 }
 
@@ -19,6 +20,7 @@ export function formatTime(value?: string | null, timeZone?: string | null): str
     hour: "numeric",
     minute: "2-digit",
     timeZone: timeZone || undefined,
+    ...(timeZone ? { timeZoneName: "short" as const } : {}),
   }).format(date);
 }
 
@@ -58,7 +60,7 @@ export function loadingCopy(message: string): string {
   if (text.includes("option") && (text.includes("works") || /\b(first|second|third|\d+)\b/.test(text))) {
     return "Creating proposal…";
   }
-  if (text.includes("what options") || text.includes("available options") || text.includes("another slot")) {
+  if (text.includes("what options") || text.includes("available options") || text.includes("another slot") || text.includes("next slot")) {
     return "Checking feasible options…";
   }
   if (text.includes("late") || text.includes("eta") || text.includes("traffic")) {

@@ -2,7 +2,7 @@ import { apiRequest } from "./client";
 import type { Appointment, DriverException, ETAUpdate, LatestETA, Paginated, Shipment } from "./types";
 
 export function listShipments(params: { driver_id?: string; facility_id?: string; status?: string } = {}) {
-  const query = new URLSearchParams({ page: "1", page_size: "50" });
+  const query = new URLSearchParams({ page: "1", page_size: "100" });
   if (params.driver_id) query.set("driver_id", params.driver_id);
   if (params.facility_id) query.set("facility_id", params.facility_id);
   if (params.status) query.set("status", params.status);

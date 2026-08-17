@@ -166,7 +166,7 @@ flowchart LR
   end
 
   subgraph step5["Step 5 FeasibilityEngine"]
-    E1["ETA-001 blocking: ETA must fall inside the slot window"]
+    E1["ETA-001 blocking: ETA must not be after the slot end; early arrival may wait"]
     E2["ETA-002 warning: ETA vs facility operating hours"]
     X1["EXCP-001 blocking: zero open/acknowledged exceptions"]
   end
@@ -186,7 +186,9 @@ flowchart LR
 | Rule | When it fails | Outcome |
 |---|---|---|
 | `ETA-001` | Slot present, no latest ETA | `not_evaluable` (unevaluable + not passed) |
-| `ETA-001` | Latest ETA outside `[slot.start, slot.end]` | `not_feasible` |
+| `ETA-001` | Latest ETA after `slot.end` | `not_feasible` |
+| `ETA-001` | Latest ETA before `slot.start` | **feasible** (early arrival may wait; schema has no unload duration) |
+| `ETA-001` | Latest ETA in `[slot.start, slot.end]` | feasible |
 | `ETA-002` | ETA outside operating hours | Warning only. Does not block. |
 | `EXCP-001` | Any `open` or `acknowledged` exception | `not_feasible` even if ETA is inside the slot |
 | Step 9 | `has_active_exception` | Shipment unassigned; not ranked |

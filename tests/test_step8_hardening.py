@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import uuid
 from pathlib import Path
 
@@ -17,21 +16,8 @@ from app.core.database import Base
 from app.models.chat_message import ChatMessage
 from app.schemas.conversation import ConversationCreateRequest, ConversationMessageRequest
 from app.services.conversation import ConversationService
+from tests.db import postgres_test_url as _postgres_test_url
 from tests.test_step8_conversation import _build_world, _executor, _service
-
-
-def _postgres_test_url() -> str | None:
-    url = os.environ.get("DATABASE_URL", settings.database_url)
-    if not url.startswith("postgresql"):
-        return None
-    try:
-        engine = create_engine(url, connect_args={"connect_timeout": 3})
-        with engine.connect() as connection:
-            connection.exec_driver_sql("SELECT 1")
-        engine.dispose()
-        return url
-    except Exception:
-        return None
 
 
 @pytest.fixture

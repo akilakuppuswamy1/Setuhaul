@@ -1,18 +1,17 @@
 """Step 5 adversarial hardening and validation tests."""
 
-import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, func, select, text
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 import app.models  # noqa: F401
-from app.core.config import settings
 from app.core.database import Base
+from tests.db import postgres_test_url as _postgres_test_url
 from app.engines.feasibility.engine import FeasibilityEngine
 from app.engines.feasibility.models import (
     EntityStatusFacts,
@@ -85,20 +84,6 @@ def _table_counts(session: Session) -> dict[str, int]:
         table.__tablename__: int(session.scalar(select(func.count()).select_from(table)) or 0)
         for table in ALL_OPERATIONAL_TABLES
     }
-
-
-def _postgres_test_url() -> str | None:
-    url = os.environ.get("DATABASE_URL", settings.database_url)
-    if not url.startswith("postgresql"):
-        return None
-    try:
-        engine = create_engine(url)
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
-        engine.dispose()
-        return url
-    except Exception:
-        return None
 
 
 @pytest.fixture

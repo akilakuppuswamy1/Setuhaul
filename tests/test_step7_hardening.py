@@ -10,13 +10,13 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, func, select, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
 import app.models  # noqa: F401
-from app.core.config import settings
 from app.core.database import Base
+from tests.db import reset_public_schema
 from app.core.exceptions import ConflictError, NotFoundError, SetuHaulError
 from app.models import (
     Appointment,
@@ -66,8 +66,7 @@ def postgres_url() -> str:
 def postgres_engine(postgres_url: str):
     engine = create_engine(postgres_url, poolclass=NullPool)
     with engine.begin() as connection:
-        connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
-        connection.execute(text("CREATE SCHEMA public"))
+        reset_public_schema(connection)
     Base.metadata.create_all(engine)
     yield engine
     engine.dispose()
@@ -301,8 +300,8 @@ class TestStaleScenarios:
             DriverException(
                 shipment_id=data["shipment"].id,
                 driver_id=data["shipment"].driver_id,
-                exception_type=ExceptionType.TRAFFIC,
-                description="Blocking delay",
+                exception_type=ExceptionType.BREAKDOWN,
+                description="Blocking breakdown",
                 status=ExceptionStatus.OPEN,
                 occurred_at=data["now"],
             )
@@ -385,7 +384,7 @@ class TestTwoCommitBoundary:
         with pytest.raises(RuntimeError, match="simulated proposal update failure"):
             service.accept(created.proposal_id)
 
-        assert _confirmed_count(db_session, data["slot"].id) == 1
+        assert _confirmed_count(db_session, data["slot"].id) == 0
         proposal_row = db_session.get(Appointment, created.proposal_id)
         assert proposal_row.status == AppointmentStatus.REQUESTED
 
@@ -627,7 +626,8 @@ class TestPostgreSQLConcurrencyHardening:
         confirmed = _pg_confirmed_count(verify, slot_id)
         verify.close()
         assert confirmed == 1
-        assert results.count("confirmed") >= 1
+        assert results.count("confirmed") == 1
+        assert results.count("conflict") == 4
 
     def test_capacity_three_five_concurrent(self, postgres_engine) -> None:
         session_factory = sessionmaker(bind=postgres_engine)
@@ -720,4 +720,8 @@ class TestPostgreSQLConcurrencyHardening:
         assert _pg_confirmed_count(verify, slot_id) == 1
         verify.close()
         appointment_ids = {aid for status, aid in results if status == "confirmed" and aid}
-        assert len(appointment_ids) <= 1
+        confirmed_count = sum(1 for status, _ in results if status == "confirmed")
+        conflict_count = sum(1 for status, _ in results if status == "conflict")
+        assert confirmed_count == 1
+        assert conflict_count == 2
+        assert len(appointment_ids) == 1

@@ -1,6 +1,5 @@
 """Step 6 PostgreSQL concurrency tests for allocation."""
 
-import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
@@ -12,8 +11,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
 import app.models  # noqa: F401
-from app.core.config import settings
 from app.core.database import Base
+from tests.db import postgres_test_url as _postgres_test_url
+from tests.db import reset_public_schema
 from app.core.exceptions import ConflictError
 from app.models import (
     Appointment,
@@ -42,20 +42,6 @@ def _utc(*args: int) -> datetime:
     return datetime(*args, tzinfo=timezone.utc)
 
 
-def _postgres_test_url() -> str | None:
-    url = os.environ.get("DATABASE_URL", settings.database_url)
-    if not url.startswith("postgresql"):
-        return None
-    try:
-        engine = create_engine(url)
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
-        engine.dispose()
-        return url
-    except Exception:
-        return None
-
-
 @pytest.fixture
 def postgres_url() -> str:
     url = _postgres_test_url()
@@ -68,8 +54,7 @@ def postgres_url() -> str:
 def postgres_engine(postgres_url: str):
     engine = create_engine(postgres_url, poolclass=NullPool)
     with engine.begin() as connection:
-        connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
-        connection.execute(text("CREATE SCHEMA public"))
+        reset_public_schema(connection)
     Base.metadata.create_all(engine)
     yield engine
     engine.dispose()

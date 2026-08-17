@@ -10,13 +10,13 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, func, select, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
 import app.models  # noqa: F401
-from app.core.config import settings
 from app.core.database import Base
+from tests.db import reset_public_schema
 from app.core.exceptions import ConflictError, SetuHaulError
 from app.models import (
     Appointment,
@@ -69,8 +69,7 @@ def postgres_url() -> str:
 def postgres_engine(postgres_url: str):
     engine = create_engine(postgres_url, poolclass=NullPool)
     with engine.begin() as connection:
-        connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
-        connection.execute(text("CREATE SCHEMA public"))
+        reset_public_schema(connection)
     Base.metadata.create_all(engine)
     yield engine
     engine.dispose()

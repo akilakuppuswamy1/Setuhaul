@@ -11,6 +11,8 @@ build/
 .ruff_cache/
 frontend/node_modules/
 frontend/dist/
+frontend/test-results/
+scripts/_demo_db_before.txt/
 node_modules/
 docs/_tmp_*/
 docs/_render_*

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class ToolName(str, Enum):
     GET_SHIPMENT_STATUS = "get_shipment_status"
+    GET_APPOINTMENT = "get_appointment"
     RECORD_ETA_UPDATE = "record_eta_update"
     CREATE_DRIVER_EXCEPTION = "create_driver_exception"
     EVALUATE_FEASIBILITY = "evaluate_feasibility"
@@ -55,6 +56,7 @@ class ToolArguments(BaseModel):
     leave_by_local: str | None = None
     eta_local: str | None = None
     timezone_name: str | None = None
+    eta_source: str | None = None
 
 
 def validate_tool_name(name: str) -> str:

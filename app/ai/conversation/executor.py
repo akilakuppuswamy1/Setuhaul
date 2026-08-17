@@ -8,21 +8,23 @@ from uuid import UUID
 
 from app.ai.conversation.clocks import (
     localize_clock_on,
+    localize_operational_clock,
     slot_ends_on_or_before,
     slot_starts_on_or_after,
 )
 from app.ai.conversation.models import PresentedOption, ToolResult
 from app.ai.conversation.tools import ALLOWED_TOOL_NAMES, ToolName, parse_tool_arguments
 from app.core.exceptions import ConflictError, NotFoundError, SetuHaulError
-from app.models.enums import ETASource, ExceptionType, ShipmentStatus
+from app.models.enums import AppointmentStatus, ETASource, ExceptionType, ShipmentStatus
 from app.schemas.driver_exception import DriverExceptionCreate
 from app.schemas.eta_update import ETAUpdateCreate
 from app.schemas.feasibility import FeasibilityEvaluateRequest
 from app.schemas.proposal import ProposalCreateRequest
 from app.services.appointment import AppointmentSlotService
+from app.services.facility import FacilityService
 from app.services.feasibility import FeasibilityService
 from app.services.operations import DriverExceptionService, ETAUpdateService
-from app.services.proposal import ProposalService
+from app.services.proposal import PROPOSAL_MARKER, ProposalService
 from app.services.scheduling import SchedulingService
 from app.services.shipment import ShipmentService
 
@@ -41,6 +43,7 @@ class ToolExecutor:
         slot_service: AppointmentSlotService,
         proposal_service: ProposalService,
         scheduling_service: SchedulingService | None = None,
+        facility_service: FacilityService | None = None,
     ) -> None:
         self._shipment_service = shipment_service
         self._eta_service = eta_service
@@ -49,6 +52,7 @@ class ToolExecutor:
         self._slot_service = slot_service
         self._proposal_service = proposal_service
         self._scheduling_service = scheduling_service
+        self._facility_service = facility_service
         self._actor_driver_id: UUID | None = None
 
     def bind_driver(self, driver_id: UUID | None) -> None:
@@ -88,6 +92,11 @@ class ToolExecutor:
     def _dispatch(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name == ToolName.GET_SHIPMENT_STATUS.value:
             return self._get_shipment_status(_require_uuid(arguments.get("shipment_id"), "shipment_id"))
+        if name == ToolName.GET_APPOINTMENT.value:
+            return self._get_appointment(
+                _require_uuid(arguments.get("shipment_id"), "shipment_id"),
+                timezone_name=arguments.get("timezone_name") if isinstance(arguments.get("timezone_name"), str) else None,
+            )
         if name == ToolName.RECORD_ETA_UPDATE.value:
             return self._record_eta(arguments)
         if name == ToolName.CREATE_DRIVER_EXCEPTION.value:
@@ -136,6 +145,39 @@ class ToolExecutor:
             "status": shipment.status.value if isinstance(shipment.status, ShipmentStatus) else str(shipment.status),
             "destination_location": shipment.destination_location,
             "latest_eta": latest.latest_eta.isoformat() if latest.latest_eta else None,
+            "timezone_name": self._facility_timezone(shipment.destination_facility_id, None),
+        }
+
+    def _get_appointment(self, shipment_id: UUID, *, timezone_name: str | None = None) -> dict[str, Any]:
+        shipment = self._shipment_service.get(shipment_id)
+        listed = self._shipment_service.list_appointments(shipment_id, page=1, page_size=50)
+        chosen = _canonical_appointment(listed.items) or _current_appointment(listed.items)
+        if chosen is None:
+            return {
+                "found": False,
+                "read_only": True,
+                "shipment_id": str(shipment.id),
+                "shipment_number": shipment.shipment_number,
+                "timezone_name": timezone_name,
+            }
+        start_time = None
+        end_time = None
+        if chosen.appointment_slot_id is not None:
+            slot = self._slot_service.get(chosen.appointment_slot_id)
+            start_time = slot.start_time.isoformat() if slot.start_time else None
+            end_time = slot.end_time.isoformat() if slot.end_time else None
+        status = chosen.status.value if isinstance(chosen.status, AppointmentStatus) else str(chosen.status)
+        return {
+            "found": True,
+            "read_only": True,
+            "shipment_id": str(shipment.id),
+            "shipment_number": shipment.shipment_number,
+            "appointment_id": str(chosen.id),
+            "status": status,
+            "slot_id": str(chosen.appointment_slot_id) if chosen.appointment_slot_id else None,
+            "start_time": start_time,
+            "end_time": end_time,
+            "timezone_name": timezone_name,
         }
 
     def _record_eta(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -144,21 +186,49 @@ class ToolExecutor:
         new_eta = _parse_datetime(arguments.get("new_eta"))
         timezone_name = arguments.get("timezone_name") if isinstance(arguments.get("timezone_name"), str) else None
         eta_local = arguments.get("eta_local") if isinstance(arguments.get("eta_local"), str) else None
+        eta_source = arguments.get("eta_source") if isinstance(arguments.get("eta_source"), str) else None
+        shipment = self._shipment_service.get(shipment_id)
+        timezone_name = self._facility_timezone(shipment.destination_facility_id, timezone_name)
         latest = self._eta_service.get_latest(shipment_id)
+        scheduled = self._scheduled_arrival(shipment_id, timezone_name=timezone_name)
+        delay_baseline = scheduled or self._original_eta(shipment_id) or now
+        delay = arguments.get("delay_minutes") if isinstance(arguments.get("delay_minutes"), int) else None
+        implied_eta = _as_utc(delay_baseline) + timedelta(minutes=delay) if delay is not None else None
+
         if new_eta is None and eta_local:
-            reference = latest.latest_eta or now
-            localized = localize_clock_on(_aware(reference), eta_local, timezone_name)
+            localized = localize_operational_clock(delay_baseline, eta_local, timezone_name)
+            if localized is None:
+                localized = localize_clock_on(delay_baseline, eta_local, timezone_name)
             if localized is None:
                 raise SetuHaulError("The stated arrival time could not be interpreted.")
             new_eta = localized
+            eta_source = eta_source or "explicit"
+        if new_eta is not None and implied_eta is not None:
+            if scheduled is not None:
+                explicit = _as_utc(new_eta)
+                delta = abs((explicit - implied_eta).total_seconds())
+                if delta > 30 * 60:
+                    raise SetuHaulError(
+                        "The stated arrival time and the stated delay do not match. "
+                        "Which arrival time should I use?"
+                    )
+            new_eta = _as_utc(new_eta)
+            eta_source = eta_source or "explicit"
         if new_eta is None:
-            delay = arguments.get("delay_minutes")
-            if not isinstance(delay, int):
+            if delay is None:
                 raise SetuHaulError("A new ETA or delay duration is required.")
-            base = latest.latest_eta or now
-            new_eta = _aware(base) + timedelta(minutes=delay)
+            new_eta = implied_eta
+            eta_source = eta_source or "relative"
         else:
-            new_eta = _aware(new_eta)
+            new_eta = _as_utc(new_eta)
+            eta_source = eta_source or "explicit"
+
+        if latest.latest_eta is not None and _as_utc(latest.latest_eta) == _as_utc(new_eta) and latest.eta_update is not None:
+            payload = latest.eta_update.model_dump(mode="json")
+            payload["timezone_name"] = timezone_name
+            payload["eta_source"] = eta_source
+            payload["idempotent"] = True
+            return payload
         reason = arguments.get("reason")
         if isinstance(reason, str):
             reason = reason[:2000]
@@ -171,7 +241,11 @@ class ToolExecutor:
                 reason=reason,
             ),
         )
-        return created.model_dump(mode="json")
+        payload = created.model_dump(mode="json")
+        payload["timezone_name"] = timezone_name
+        payload["eta_source"] = eta_source
+        payload["idempotent"] = False
+        return payload
 
     def _create_exception(self, arguments: dict[str, Any]) -> dict[str, Any]:
         shipment_id = _require_uuid(arguments.get("shipment_id"), "shipment_id")
@@ -190,19 +264,38 @@ class ToolExecutor:
 
     def _evaluate_feasibility(self, arguments: dict[str, Any]) -> dict[str, Any]:
         shipment_id = _require_uuid(arguments.get("shipment_id"), "shipment_id")
+        slot_id = arguments.get("appointment_slot_id")
+        if slot_id is None:
+            listed = self._shipment_service.list_appointments(shipment_id, page=1, page_size=50)
+            chosen = _canonical_appointment(listed.items) or _current_appointment(listed.items)
+            if chosen is not None and chosen.appointment_slot_id is not None:
+                slot_id = chosen.appointment_slot_id
         result = self._feasibility_service.evaluate(
             shipment_id,
             FeasibilityEvaluateRequest(
-                appointment_slot_id=arguments.get("appointment_slot_id"),
+                appointment_slot_id=slot_id,
                 dock_id=arguments.get("dock_id"),
             ),
         )
-        return {
+        payload = {
             "outcome": result.outcome.value,
             "feasible": result.feasible,
             "blocking_reasons": result.blocking_reasons,
             "warnings": result.warnings,
+            "operational_facts": result.operational_facts,
         }
+        eta_rule = next((rule for rule in result.rule_results if rule.rule_id == "ETA-001"), None)
+        if eta_rule is not None:
+            payload["arrival_relation"] = eta_rule.facts.get("arrival_relation")
+            payload["latest_eta"] = eta_rule.facts.get("latest_eta")
+            payload["slot_start"] = eta_rule.facts.get("slot_start")
+            payload["slot_end"] = eta_rule.facts.get("slot_end")
+            payload["eta_window_reason"] = eta_rule.reason
+            if eta_rule.evaluable:
+                payload["eta_window_passed"] = bool(eta_rule.passed)
+        shipment = self._shipment_service.get(shipment_id)
+        payload["timezone_name"] = self._facility_timezone(shipment.destination_facility_id, None)
+        return payload
 
     def _get_available_options(
         self,
@@ -215,13 +308,20 @@ class ToolExecutor:
         shipment = self._shipment_service.get(shipment_id)
         if shipment.destination_facility_id is None:
             raise SetuHaulError("Shipment has no destination facility assigned")
-        slots = self._slot_service.list_open_for_facility(shipment.destination_facility_id)
+        timezone_name = self._facility_timezone(shipment.destination_facility_id, timezone_name)
+        slots = sorted(
+            self._slot_service.list_open_for_facility(shipment.destination_facility_id),
+            key=lambda item: (item.start_time, item.id),
+        )
         options: list[PresentedOption] = []
         evaluations: list[dict[str, Any]] = []
         for slot in slots:
             evaluation = self._feasibility_service.evaluate(
                 shipment_id,
-                FeasibilityEvaluateRequest(appointment_slot_id=slot.id),
+                FeasibilityEvaluateRequest(
+                    appointment_slot_id=slot.id,
+                    ignore_delay_exceptions=True,
+                ),
             )
             evaluations.append(
                 {
@@ -254,7 +354,13 @@ class ToolExecutor:
         for index, option in enumerate(filtered, start=1):
             option.index = index
         note = None
-        if unfiltered_count and not filtered:
+        rejection_summary = _rejection_summary(evaluations)
+        if not filtered and rejection_summary and unfiltered_count == 0:
+            note = (
+                "No open facility slot is feasible for the current ETA. "
+                + rejection_summary
+            )
+        elif unfiltered_count and not filtered:
             if earliest_start_local and leave_by_local:
                 note = (
                     "There are feasible slots, but none start at or after "
@@ -273,6 +379,8 @@ class ToolExecutor:
             "feasible_count": len(filtered),
             "unfiltered_feasible_count": unfiltered_count,
             "constraint_note": note,
+            "rejection_summary": rejection_summary,
+            "timezone_name": timezone_name,
         }
 
     def _create_proposal(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -320,11 +428,100 @@ class ToolExecutor:
         payload["read_only"] = True
         return payload
 
+    def _scheduled_arrival(self, shipment_id: UUID, *, timezone_name: str | None) -> datetime | None:
+        listed = self._shipment_service.list_appointments(shipment_id, page=1, page_size=50)
+        original = _canonical_appointment(listed.items)
+        if original is None or original.appointment_slot_id is None:
+            return None
+        slot = self._slot_service.get(original.appointment_slot_id)
+        _ = timezone_name
+        return slot.start_time
 
-def _aware(value: datetime) -> datetime:
+    def _original_eta(self, shipment_id: UUID) -> datetime | None:
+        listed = self._eta_service.list(page=1, page_size=50, shipment_id=shipment_id)
+        if not listed.items:
+            return None
+        return listed.items[0].new_eta
+
+    def _facility_timezone(self, facility_id: UUID | None, explicit: str | None) -> str | None:
+        if explicit:
+            return explicit
+        if facility_id is None or self._facility_service is None:
+            return None
+        try:
+            return self._facility_service.get(facility_id).timezone
+        except Exception:
+            return None
+
+
+_CURRENT_APPOINTMENT_RANK = {
+    AppointmentStatus.CONFIRMED: 0,
+    AppointmentStatus.HELD: 1,
+    AppointmentStatus.REQUESTED: 2,
+}
+
+
+def _is_proposal_record(item: Any) -> bool:
+    notes = getattr(item, "notes", None) or ""
+    return PROPOSAL_MARKER in notes
+
+
+def _canonical_appointment(items: list[Any]) -> Any | None:
+    operational = [
+        item
+        for item in items
+        if getattr(item, "status", None) in _CURRENT_APPOINTMENT_RANK and not _is_proposal_record(item)
+    ]
+    if not operational:
+        return None
+    operational.sort(key=lambda item: (item.created_at, str(item.id)))
+    return operational[0]
+
+
+def _current_appointment(items: list[Any]) -> Any | None:
+    ranked = [
+        item
+        for item in items
+        if getattr(item, "status", None) in _CURRENT_APPOINTMENT_RANK and not _is_proposal_record(item)
+    ]
+    if not ranked:
+        ranked = [item for item in items if getattr(item, "status", None) in _CURRENT_APPOINTMENT_RANK]
+    if not ranked:
+        return None
+    ranked.sort(
+        key=lambda item: (
+            _CURRENT_APPOINTMENT_RANK[item.status],
+            item.created_at,
+            str(item.id),
+        )
+    )
+    return ranked[0]
+
+
+def _rejection_summary(evaluations: list[dict[str, Any]]) -> str | None:
+    counts: dict[str, int] = {}
+    for item in evaluations:
+        if item.get("feasible"):
+            continue
+        reasons = item.get("blocking_reasons") or []
+        label = "; ".join(str(reason) for reason in reasons[:2]) or str(item.get("outcome") or "infeasible")
+        counts[label] = counts.get(label, 0) + 1
+    if not counts:
+        return None
+    ranked = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+    top, count = ranked[0]
+    suffix = f" ({count} open slot(s))" if count else ""
+    return f"{top}{suffix}"
+
+
+def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _aware(value: datetime) -> datetime:
+    return _as_utc(value)
 
 
 def _require_uuid(value: object, field_name: str) -> UUID:

@@ -27,7 +27,7 @@ from app.models.appointment_slot import AppointmentSlot
 from app.models.carrier import Carrier
 from app.models.dock import Dock
 from app.models.driver import Driver
-from app.models.enums import AppointmentStatus
+from app.models.enums import AppointmentStatus, DockStatus
 from app.models.facility import Facility
 from app.models.shipment import Shipment
 from app.models.vehicle import Vehicle
@@ -84,6 +84,7 @@ class FeasibilityService:
             evaluated_at=evaluated_at,
             appointment_slot_id=payload.appointment_slot_id,
             dock_id=payload.dock_id,
+            ignore_delay_exceptions=payload.ignore_delay_exceptions,
         )
         evaluation = self._engine.evaluate(context)
         return self._to_response(evaluation)
@@ -95,6 +96,7 @@ class FeasibilityService:
         evaluated_at: datetime,
         appointment_slot_id: UUID | None,
         dock_id: UUID | None,
+        ignore_delay_exceptions: bool = False,
     ) -> FeasibilityContext:
         carrier = self._carrier_repo.get_by_id(shipment.carrier_id)
         driver = (
@@ -116,11 +118,20 @@ class FeasibilityService:
         appointment = self._resolve_appointment(shipment.id, appointment_slot_id)
         slot = self._resolve_slot(shipment.id, appointment, appointment_slot_id)
         dock = self._resolve_dock(shipment.id, appointment, dock_id)
+        active = self._appointment_repo.get_active_for_shipment(
+            shipment.id, _ACTIVE_APPOINTMENT_STATUSES
+        )
 
         latest_eta_update = self._shipment_repo.get_latest_eta(shipment.id)
         latest_eta = latest_eta_update.new_eta if latest_eta_update else None
 
         exceptions = self._exception_repo.list_for_shipment(shipment.id)
+        if ignore_delay_exceptions:
+            exceptions = [
+                item
+                for item in exceptions
+                if item.exception_type.value not in {"delay", "traffic"}
+            ]
         facility_rules = (
             self._rule_repo.list_active_at(facility.id, evaluated_at)
             if facility is not None
@@ -162,7 +173,17 @@ class FeasibilityService:
             facility=self._facility_facts(facility) if facility else None,
             appointment=self._appointment_facts(appointment) if appointment else None,
             slot=self._slot_facts(slot, booked_count, shipment_on_slot) if slot else None,
-            dock=self._dock_facts(dock) if dock else None,
+            dock=self._dock_facts(
+                dock,
+                held_by_current_shipment=(
+                    active is not None
+                    and active.dock_id == dock.id
+                    and appointment_slot_id is not None
+                    and active.appointment_slot_id != appointment_slot_id
+                ),
+            )
+            if dock
+            else None,
             latest_eta=latest_eta,
             active_exceptions=tuple(self._exception_facts(exc) for exc in exceptions),
             facility_rules=tuple(self._rule_facts(rule) for rule in facility_rules),
@@ -307,12 +328,18 @@ class FeasibilityService:
         )
 
     @staticmethod
-    def _dock_facts(dock: Dock) -> DockFacts:
+    def _dock_facts(dock: Dock, *, held_by_current_shipment: bool = False) -> DockFacts:
+        # A dock occupied by this shipment can be reused when evaluating a reschedule.
+        status = (
+            DockStatus.AVAILABLE.value
+            if held_by_current_shipment and dock.status == DockStatus.OCCUPIED
+            else dock.status.value
+        )
         return DockFacts(
             dock_id=dock.id,
             facility_id=dock.facility_id,
             name=dock.name,
-            status=dock.status.value,
+            status=status,
             max_weight_kg=dock.max_weight_kg,
             temperature_controlled=dock.temperature_controlled,
         )

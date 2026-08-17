@@ -13,7 +13,9 @@ class ConversationIntent(str, Enum):
     UPDATE_ETA = "UPDATE_ETA"
     REPORT_EXCEPTION = "REPORT_EXCEPTION"
     ASK_STATUS = "ASK_STATUS"
+    ASK_APPOINTMENT = "ASK_APPOINTMENT"
     ASK_OPTIONS = "ASK_OPTIONS"
+    ASK_FEASIBILITY_STATUS = "ASK_FEASIBILITY_STATUS"
     ASK_FACILITY_SCHEDULE = "ASK_FACILITY_SCHEDULE"
     PROPOSE_CHANGE = "PROPOSE_CHANGE"
     ACCEPT_PROPOSAL = "ACCEPT_PROPOSAL"
@@ -50,6 +52,7 @@ class ConversationContext(BaseModel):
     selected_option_index: int | None = None
     proposal_id: UUID | None = None
     proposal_slot_id: UUID | None = None
+    pending_proposal_count: int = 0
     last_tool_result: dict[str, Any] | None = None
     pending_clarification: str | None = None
     pending_intent: ConversationIntent | None = None
@@ -57,6 +60,13 @@ class ConversationContext(BaseModel):
     facility_timezone: str | None = None
     earliest_start_local: str | None = None
     leave_by_local: str | None = None
+    repair_duration_minutes: int | None = None
+    reported_delay_minutes: int | None = None
+    explicit_eta_local: str | None = None
+    eta_authority: str | None = None
+    exception_type: str | None = None
+    original_appointment_feasible: bool | None = None
+    last_clarification_key: str | None = None
     requires_human: bool = False
     escalation_reason: str | None = None
     candidate_shipments: list[CandidateShipment] = Field(default_factory=list)
@@ -68,10 +78,18 @@ class Understanding(BaseModel):
     shipment_id: UUID | None = None
     shipment_hint: str | None = None
     delay_minutes: int | None = None
+    repair_duration_minutes: int | None = None
     new_eta: datetime | None = None
     eta_local: str | None = None
+    original_appointment_local: str | None = None
     earliest_start_local: str | None = None
     leave_by_local: str | None = None
+    asks_options: bool = False
+    cannot_make_appointment: bool = False
+    leave_by_ambiguous: bool = False
+    option_preference: str | None = None
+    option_clock_local: str | None = None
+    completion_by_local: str | None = None
     option_index: int | None = None
     confirm: bool = False
     reject: bool = False

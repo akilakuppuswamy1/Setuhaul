@@ -25,6 +25,15 @@ class FeasibilityEvaluateRequest(BaseModel):
         default=None,
         description="Explicit evaluation timestamp for deterministic results",
     )
+    ignore_delay_exceptions: bool = Field(
+        default=False,
+        description=(
+            "When seeking or confirming an alternative slot, delay/traffic exceptions "
+            "are the reason for reschedule and must not block EXCP-001. "
+            "Breakdown/repair/safety exceptions still block. Direct feasibility "
+            "evaluation keeps the default (false)."
+        ),
+    )
 
 
 class RuleResultResponse(BaseModel):

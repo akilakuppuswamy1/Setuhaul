@@ -58,6 +58,12 @@ def _to_local(dt: datetime, timezone_name: str) -> datetime | None:
     return dt.astimezone(tz)
 
 
+def _utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=ZoneInfo("UTC"))
+    return dt.astimezone(ZoneInfo("UTC"))
+
+
 def _parse_hhmm(value: object) -> time | None:
     if not isinstance(value, str):
         return None
@@ -830,19 +836,32 @@ def evaluate_eta_001(ctx: FeasibilityContext) -> RuleResult:
             facts={"slot_start": ctx.slot.start_time.isoformat(), "slot_end": ctx.slot.end_time.isoformat()},
             evaluable=False,
         )
-    passed = ctx.slot.start_time <= ctx.latest_eta <= ctx.slot.end_time
+    eta = _utc(ctx.latest_eta)
+    start = _utc(ctx.slot.start_time)
+    end = _utc(ctx.slot.end_time)
+    # Waiting policy (no unload duration in schema): early arrival may wait;
+    # arrival during the window is feasible; arrival after slot end is not.
+    if eta < start:
+        relation = "before_window"
+        passed = True
+        reason = "Latest ETA is before the slot start; driver may wait"
+    elif eta <= end:
+        relation = "during_window"
+        passed = True
+        reason = "Latest ETA falls within appointment slot window"
+    else:
+        relation = "after_window"
+        passed = False
+        reason = "Latest ETA is after the appointment slot window"
     return _result(
         "ETA-001",
         passed=passed,
-        reason=(
-            "Latest ETA falls within appointment slot window"
-            if passed
-            else "Latest ETA falls outside appointment slot window"
-        ),
+        reason=reason,
         facts={
             "latest_eta": ctx.latest_eta.isoformat(),
             "slot_start": ctx.slot.start_time.isoformat(),
             "slot_end": ctx.slot.end_time.isoformat(),
+            "arrival_relation": relation,
         },
     )
 

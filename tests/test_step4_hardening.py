@@ -1,17 +1,16 @@
 """Step 4 hardening regression tests for ETA and driver exception services."""
 
-import os
 import uuid
 from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 import app.models  # noqa: F401
-from app.core.config import settings
 from app.core.database import Base
+from tests.db import postgres_test_url as _postgres_test_url
 from app.core.exceptions import SetuHaulError
 from app.models import Carrier, DriverException, ETAUpdate, Shipment
 from app.models.enums import ETASource, ExceptionStatus, ExceptionType
@@ -42,20 +41,6 @@ def _make_shipment(
     db_session.commit()
     db_session.refresh(shipment)
     return shipment
-
-
-def _postgres_test_url() -> str | None:
-    url = os.environ.get("DATABASE_URL", settings.database_url)
-    if not url.startswith("postgresql"):
-        return None
-    try:
-        engine = create_engine(url)
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
-        engine.dispose()
-        return url
-    except Exception:
-        return None
 
 
 @pytest.fixture

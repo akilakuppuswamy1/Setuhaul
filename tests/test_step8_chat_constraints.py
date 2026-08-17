@@ -223,6 +223,7 @@ class TestExactMultiTurnScenario:
         requested = (
             db_session.query(Appointment)
             .filter(Appointment.status == AppointmentStatus.REQUESTED)
+            .filter(Appointment.notes.contains("STEP7_PROPOSAL"))
             .one()
         )
         assert requested.appointment_slot_id == world["slot_b"].id

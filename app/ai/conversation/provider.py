@@ -146,6 +146,20 @@ def _merge_provider_payload(fallback: Understanding, payload: dict[str, Any]) ->
         if intent in _WRITE_INTENTS and fallback.intent not in _WRITE_INTENTS and not fallback.confirm and not fallback.reject:
             intent = fallback.intent
             confidence = fallback.confidence
+        if fallback.intent in {
+            ConversationIntent.ASK_OPTIONS,
+            ConversationIntent.ASK_FEASIBILITY_STATUS,
+            ConversationIntent.ASK_APPOINTMENT,
+            ConversationIntent.ASK_STATUS,
+        } and intent != fallback.intent:
+            intent = fallback.intent
+            confidence = fallback.confidence
+        if fallback.intent == ConversationIntent.ASK_APPOINTMENT:
+            intent = fallback.intent
+            confidence = fallback.confidence
+        if fallback.intent == ConversationIntent.ASK_OPTIONS and intent != ConversationIntent.ASK_OPTIONS:
+            intent = fallback.intent
+            confidence = fallback.confidence
     delay = payload.get("delay_minutes")
     option = payload.get("option_index")
     option_index = int(option) if isinstance(option, (int, float)) else fallback.option_index
@@ -156,9 +170,17 @@ def _merge_provider_payload(fallback: Understanding, payload: dict[str, Any]) ->
         confidence=confidence,
         shipment_hint=payload.get("shipment_hint") or fallback.shipment_hint,
         delay_minutes=int(delay) if isinstance(delay, (int, float)) and delay > 0 else fallback.delay_minutes,
+        repair_duration_minutes=fallback.repair_duration_minutes,
         eta_local=fallback.eta_local,
+        original_appointment_local=fallback.original_appointment_local,
         earliest_start_local=fallback.earliest_start_local,
         leave_by_local=fallback.leave_by_local,
+        asks_options=fallback.asks_options,
+        cannot_make_appointment=fallback.cannot_make_appointment,
+        leave_by_ambiguous=fallback.leave_by_ambiguous,
+        option_preference=fallback.option_preference,
+        option_clock_local=fallback.option_clock_local,
+        completion_by_local=fallback.completion_by_local,
         option_index=option_index,
         confirm=fallback.confirm,
         reject=fallback.reject,

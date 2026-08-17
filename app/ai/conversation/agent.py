@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from app.ai.conversation.clocks import slot_ends_on_or_before
-from app.ai.conversation.context import resolve_option, resolve_shipment
+import re
+
+from app.ai.conversation.clocks import parse_hhmm, slot_ends_on_or_before
+from app.ai.conversation.intents import _declines_confirm
+from app.ai.conversation.context import match_presented_option, resolve_option, resolve_shipment
 from app.ai.conversation.escalation import driver_escalation_message, should_escalate
-from app.ai.conversation.formatter import format_turn, public_metadata
+from app.ai.conversation.formatter import format_feasibility_status, format_turn, public_metadata
 from app.ai.conversation.models import (
     AgentTurn,
     ConversationContext,
@@ -14,7 +17,7 @@ from app.ai.conversation.models import (
     ToolResult,
     Understanding,
 )
-from app.ai.conversation.provider import FakeLLMProvider, LLMProvider
+from app.ai.conversation.semantics import is_informal_affirmative
 from app.ai.conversation.tools import IRREVERSIBLE_TOOLS, ToolName
 
 _SHIPMENT_REQUIRED = {
@@ -22,7 +25,9 @@ _SHIPMENT_REQUIRED = {
     ConversationIntent.UPDATE_ETA,
     ConversationIntent.REPORT_EXCEPTION,
     ConversationIntent.ASK_STATUS,
+    ConversationIntent.ASK_APPOINTMENT,
     ConversationIntent.ASK_OPTIONS,
+    ConversationIntent.ASK_FEASIBILITY_STATUS,
     ConversationIntent.ASK_FACILITY_SCHEDULE,
     ConversationIntent.PROPOSE_CHANGE,
     ConversationIntent.ACCEPT_PROPOSAL,
@@ -41,6 +46,7 @@ class ConversationAgent:
         if understanding.wants_human:
             understanding.intent = ConversationIntent.HUMAN_ESCALATION
         understanding = _resume_pending(understanding, context)
+        understanding = _bind_presented_selection(understanding, context)
         return self.handle_understanding(understanding, context)
 
     def handle_understanding(
@@ -71,10 +77,6 @@ class ConversationAgent:
                 return option_turn
 
         plan = _plan_tools(understanding, context)
-        if plan.clarification:
-            context.pending_clarification = plan.pending
-            return _clarification_turn(intent, understanding.confidence, context, plan.clarification)
-
         results: list[ToolResult] = []
         for call in plan.calls:
             if understanding.injection_attempt and call["name"] in IRREVERSIBLE_TOOLS:
@@ -87,6 +89,18 @@ class ConversationAgent:
             result = self._executor.execute(call["name"], arguments)
             results.append(result)
             _apply_tool_result(context, result)
+
+        if plan.clarification:
+            context.pending_clarification = plan.pending
+            prefix = format_turn(results=results) if results else ""
+            question = f"{prefix} {plan.clarification}".strip() if prefix else plan.clarification
+            return _clarification_turn(
+                intent,
+                understanding.confidence,
+                context,
+                question,
+                results=results,
+            )
 
         already_escalated = any(
             item.name == ToolName.REQUEST_HUMAN_ESCALATION.value and item.success for item in results
@@ -123,18 +137,55 @@ class ConversationAgent:
             )
 
         response = format_turn(results=results)
+        if intent == ConversationIntent.ASK_FEASIBILITY_STATUS:
+            response = format_feasibility_status(
+                results,
+                completion_by_local=understanding.completion_by_local,
+            ) or response
+        if intent == ConversationIntent.ASK_STATUS and _declines_confirm(understanding.raw_message.lower()):
+            response = "The appointment has not been confirmed."
+        offered_options = False
+        if (
+            understanding.intent in {
+                ConversationIntent.UPDATE_ETA,
+                ConversationIntent.REPORT_DELAY,
+                ConversationIntent.REPORT_EXCEPTION,
+            }
+            and not understanding.asks_options
+            and not understanding.cannot_make_appointment
+            and context.original_appointment_feasible is False
+            and all(item.name != ToolName.GET_AVAILABLE_OPTIONS.value for item in results)
+        ):
+            response = f"{response} I can check later available slots.".strip()
+            offered_options = True
         status = "ok"
         if any(not item.success for item in results):
             status = results[-1].error_code or "error"
-        return _completed_turn(intent, understanding.confidence, context, results, response, status=status)
+        turn = _completed_turn(intent, understanding.confidence, context, results, response, status=status)
+        if offered_options:
+            turn.context.pending_clarification = "options"
+            turn.context.pending_intent = ConversationIntent.ASK_OPTIONS
+        return turn
 
     def _handle_option_intent(
         self,
         understanding: Understanding,
         context: ConversationContext,
     ) -> AgentTurn | None:
-        if understanding.option_index is not None:
-            option = resolve_option(context, understanding.option_index)
+        if understanding.option_index is not None or understanding.option_preference or understanding.option_clock_local:
+            option, question = match_presented_option(
+                context,
+                option_index=understanding.option_index,
+                preference=understanding.option_preference,
+                clock_hhmm=understanding.option_clock_local,
+            )
+            if question:
+                return _clarification_turn(
+                    understanding.intent,
+                    understanding.confidence,
+                    context,
+                    question,
+                )
             if option is None:
                 if not context.presented_options:
                     return _clarification_turn(
@@ -199,34 +250,6 @@ def _plan_tools(understanding: Understanding, context: ConversationContext) -> "
                 pending="options",
             )
         return _Plan(clarification="Could you tell me what you need help with for this shipment?")
-    if intent in {ConversationIntent.UPDATE_ETA, ConversationIntent.REPORT_DELAY}:
-        if understanding.delay_minutes is None and understanding.new_eta is None and understanding.eta_local is None:
-            return _Plan(clarification="How late will you be, in minutes or hours?")
-        arguments: dict = {
-            "shipment_id": shipment_id,
-            "reason": understanding.raw_message,
-        }
-        if understanding.eta_local:
-            arguments["eta_local"] = understanding.eta_local
-            if context.facility_timezone:
-                arguments["timezone_name"] = context.facility_timezone
-        elif understanding.delay_minutes is not None:
-            arguments["delay_minutes"] = understanding.delay_minutes
-        return _Plan(calls=[{"name": ToolName.RECORD_ETA_UPDATE.value, "arguments": arguments}])
-    if intent == ConversationIntent.REPORT_EXCEPTION:
-        return _Plan(
-            calls=[
-                {
-                    "name": ToolName.CREATE_DRIVER_EXCEPTION.value,
-                    "arguments": {
-                        "shipment_id": shipment_id,
-                        "driver_id": str(context.driver_id) if context.driver_id else None,
-                        "exception_type": understanding.exception_type or "delay",
-                        "description": understanding.raw_message,
-                    },
-                }
-            ]
-        )
     if intent == ConversationIntent.ASK_STATUS:
         if context.proposal_id is not None:
             return _Plan(
@@ -238,15 +261,21 @@ def _plan_tools(understanding: Understanding, context: ConversationContext) -> "
                 ]
             )
         return _Plan(calls=[{"name": ToolName.GET_SHIPMENT_STATUS.value, "arguments": {"shipment_id": shipment_id}}])
-    if intent == ConversationIntent.ASK_OPTIONS:
+    if intent == ConversationIntent.ASK_FEASIBILITY_STATUS:
         arguments = {"shipment_id": shipment_id}
-        if context.earliest_start_local:
-            arguments["earliest_start_local"] = context.earliest_start_local
-        if context.leave_by_local:
-            arguments["leave_by_local"] = context.leave_by_local
         if context.facility_timezone:
             arguments["timezone_name"] = context.facility_timezone
-        return _Plan(calls=[{"name": ToolName.GET_AVAILABLE_OPTIONS.value, "arguments": arguments}])
+        return _Plan(
+            calls=[
+                {"name": ToolName.EVALUATE_FEASIBILITY.value, "arguments": {"shipment_id": shipment_id}},
+                {"name": ToolName.GET_APPOINTMENT.value, "arguments": arguments},
+            ]
+        )
+    if intent == ConversationIntent.ASK_APPOINTMENT:
+        arguments = {"shipment_id": shipment_id}
+        if context.facility_timezone:
+            arguments["timezone_name"] = context.facility_timezone
+        return _Plan(calls=[{"name": ToolName.GET_APPOINTMENT.value, "arguments": arguments}])
     if intent == ConversationIntent.ASK_FACILITY_SCHEDULE:
         return _Plan(
             calls=[
@@ -293,6 +322,13 @@ def _plan_tools(understanding: Understanding, context: ConversationContext) -> "
         )
     if intent == ConversationIntent.ACCEPT_PROPOSAL:
         return _plan_accept(context, shipment_id, understanding.confirm)
+    if intent in {
+        ConversationIntent.UPDATE_ETA,
+        ConversationIntent.REPORT_DELAY,
+        ConversationIntent.REPORT_EXCEPTION,
+        ConversationIntent.ASK_OPTIONS,
+    } or understanding.asks_options:
+        return _plan_operational(understanding, context, shipment_id)
     if intent in {ConversationIntent.REJECT_PROPOSAL, ConversationIntent.CANCEL_REQUEST}:
         if context.proposal_id is None:
             return _Plan(clarification="I don't have an active proposal to reject in this conversation.")
@@ -307,8 +343,160 @@ def _plan_tools(understanding: Understanding, context: ConversationContext) -> "
     return _Plan(clarification="Could you tell me what you need help with for this shipment?")
 
 
+def _plan_operational(
+    understanding: Understanding,
+    context: ConversationContext,
+    shipment_id: str | None,
+) -> "_Plan":
+    asks_options = understanding.intent == ConversationIntent.ASK_OPTIONS or understanding.asks_options
+    repair_without_eta = (
+        understanding.repair_duration_minutes is not None
+        and understanding.eta_local is None
+        and understanding.delay_minutes is None
+        and understanding.new_eta is None
+    )
+    if repair_without_eta and not asks_options:
+        minutes = understanding.repair_duration_minutes
+        calls = [_exception_call(understanding, context, shipment_id)]
+        return _Plan(
+            calls=calls,
+            clarification=(
+                f"I understand the repair may take about {minutes} minutes. "
+                "What time do you expect to reach the facility?"
+            ),
+            pending="eta",
+        )
+
+    impossible = _impossible_eta_and_leave_by(understanding, context)
+    if impossible:
+        if context.last_clarification_key == "impossible_constraints":
+            return _Plan(
+                calls=[
+                    {
+                        "name": ToolName.REQUEST_HUMAN_ESCALATION.value,
+                        "arguments": {
+                            "escalation_reason": (
+                                "Arrival time and leave-by constraint cannot both be true."
+                            )
+                        },
+                    }
+                ]
+            )
+        context.last_clarification_key = "impossible_constraints"
+        return _Plan(
+            clarification=(
+                "Those times cannot both be right: the arrival would be after the leave-by time. "
+                "Which time should I use, or should I escalate this to operations?"
+            ),
+            pending="constraints",
+        )
+
+    if (
+        context.eta_authority == "explicit"
+        and understanding.eta_local is None
+        and understanding.delay_minutes is not None
+        and context.reported_delay_minutes is not None
+        and understanding.delay_minutes != context.reported_delay_minutes
+    ):
+        when = _display_hhmm(context.explicit_eta_local) if context.explicit_eta_local else "the arrival time you gave"
+        context.last_clarification_key = "eta_conflict"
+        return _Plan(
+            clarification=(
+                f"You previously said you would arrive at {when}. "
+                "Is this new delay instead of that arrival time?"
+            ),
+            pending="eta",
+        )
+
+    skip_relative_after_explicit = (
+        context.eta_authority == "explicit"
+        and understanding.eta_local is None
+        and understanding.delay_minutes is not None
+    )
+
+    calls: list[dict] = []
+    needs_exception = _should_record_exception(understanding, asks_options)
+    if needs_exception:
+        calls.append(_exception_call(understanding, context, shipment_id))
+
+    has_eta_fact = (
+        understanding.eta_local is not None
+        or understanding.delay_minutes is not None
+        or understanding.new_eta is not None
+    )
+    if (
+        understanding.intent in {ConversationIntent.UPDATE_ETA, ConversationIntent.REPORT_DELAY}
+        and not has_eta_fact
+        and not asks_options
+    ):
+        return _Plan(clarification="How late will you be, in minutes or hours?")
+
+    if has_eta_fact and not skip_relative_after_explicit:
+        arguments: dict = {
+            "shipment_id": shipment_id,
+            "reason": understanding.raw_message,
+        }
+        if context.facility_timezone:
+            arguments["timezone_name"] = context.facility_timezone
+        if understanding.eta_local:
+            arguments["eta_local"] = understanding.eta_local
+            arguments["eta_source"] = "explicit"
+        if understanding.delay_minutes is not None and not understanding.eta_local:
+            arguments["delay_minutes"] = understanding.delay_minutes
+            arguments["eta_source"] = "relative"
+        elif understanding.delay_minutes is not None and understanding.eta_local:
+            arguments["delay_minutes"] = understanding.delay_minutes
+        calls.append({"name": ToolName.RECORD_ETA_UPDATE.value, "arguments": arguments})
+
+    evaluate_original = has_eta_fact or needs_exception or skip_relative_after_explicit
+    if evaluate_original:
+        calls.append(
+            {
+                "name": ToolName.EVALUATE_FEASIBILITY.value,
+                "arguments": {"shipment_id": shipment_id},
+            }
+        )
+
+    fetch_options = asks_options or understanding.cannot_make_appointment
+    if fetch_options:
+        calls.append(_options_call(context, shipment_id))
+    elif not calls:
+        calls.append(_options_call(context, shipment_id))
+    return _Plan(calls=calls)
+
+
+def _should_record_exception(understanding: Understanding, asks_options: bool) -> bool:
+    if understanding.exception_type in {"breakdown", "repair", "other"}:
+        return True
+    if understanding.cannot_make_appointment:
+        return True
+    if understanding.intent == ConversationIntent.REPORT_EXCEPTION:
+        return True
+    if asks_options and understanding.cannot_make_appointment:
+        return True
+    return False
+
+
+def _impossible_eta_and_leave_by(understanding: Understanding, context: ConversationContext) -> bool:
+    eta_local = understanding.eta_local or context.explicit_eta_local
+    leave_by = understanding.leave_by_local or context.leave_by_local
+    if not eta_local or not leave_by:
+        return False
+    eta = parse_hhmm(eta_local)
+    leave = parse_hhmm(leave_by)
+    if eta is None or leave is None:
+        return False
+    eta_min = eta[0] * 60 + eta[1]
+    leave_min = leave[0] * 60 + leave[1]
+    if eta[0] >= 12 and leave[0] < 12:
+        leave_min += 24 * 60
+    return eta_min > leave_min
+
+
 def _plan_accept(context: ConversationContext, shipment_id: str | None, confirm: bool) -> "_Plan":
     calls: list[dict] = []
+    if context.pending_proposal_count > 1:
+        return _Plan(clarification="There is more than one pending proposal. Which numbered option should I confirm?")
     if context.proposal_id is None:
         option = _selected_option(context)
         if option is None:
@@ -357,6 +545,29 @@ class _Plan:
         self.pending = pending
 
 
+def _options_call(context: ConversationContext, shipment_id: str | None) -> dict:
+    arguments = {"shipment_id": shipment_id}
+    if context.earliest_start_local:
+        arguments["earliest_start_local"] = context.earliest_start_local
+    if context.leave_by_local:
+        arguments["leave_by_local"] = context.leave_by_local
+    if context.facility_timezone:
+        arguments["timezone_name"] = context.facility_timezone
+    return {"name": ToolName.GET_AVAILABLE_OPTIONS.value, "arguments": arguments}
+
+
+def _exception_call(understanding: Understanding, context: ConversationContext, shipment_id: str | None) -> dict:
+    return {
+        "name": ToolName.CREATE_DRIVER_EXCEPTION.value,
+        "arguments": {
+            "shipment_id": shipment_id,
+            "driver_id": str(context.driver_id) if context.driver_id else None,
+            "exception_type": understanding.exception_type or "delay",
+            "description": understanding.raw_message,
+        },
+    }
+
+
 def _selected_option(context: ConversationContext) -> PresentedOption | None:
     return resolve_option(context, context.selected_option_index)
 
@@ -380,6 +591,12 @@ def _apply_tool_result(context: ConversationContext, result: ToolResult) -> None
         raw_eta = data.get("new_eta")
         if raw_eta:
             context.latest_eta = raw_eta
+        source = data.get("eta_source")
+        if source:
+            context.eta_authority = str(source)
+    if result.name == ToolName.EVALUATE_FEASIBILITY.value and result.success:
+        if "eta_window_passed" in data:
+            context.original_appointment_feasible = bool(data.get("eta_window_passed"))
     if result.name == ToolName.CREATE_DRIVER_EXCEPTION.value and result.success:
         from uuid import UUID
 
@@ -399,40 +616,54 @@ def _maybe_escalate(
 ) -> tuple[bool, str | None]:
     no_safe_option = False
     operational_conflict = False
+    option_detail: str | None = None
     for result in results:
         if result.name == ToolName.GET_AVAILABLE_OPTIONS.value and result.success:
-            if int(result.data.get("unfiltered_feasible_count") or result.data.get("feasible_count") or 0) == 0:
+            feasible = int(result.data.get("feasible_count") or 0)
+            unfiltered = int(result.data.get("unfiltered_feasible_count") or 0)
+            if unfiltered == 0 and feasible == 0:
                 no_safe_option = True
+                option_detail = result.data.get("rejection_summary") or result.data.get("constraint_note")
         if result.error_code in {"conflict", "stale"} and understanding.intent == ConversationIntent.ASK_OPTIONS:
             operational_conflict = True
     outside_authority = any(
         phrase in understanding.raw_message.lower()
         for phrase in ("legal", "contract penalty", "insurance claim", "safety override")
     )
-    return should_escalate(
+    escalate, reason = should_escalate(
         wants_human=understanding.wants_human or understanding.intent == ConversationIntent.HUMAN_ESCALATION,
         no_safe_option=no_safe_option,
         unresolved_ambiguity=False,
         operational_conflict=operational_conflict,
         outside_authority=outside_authority,
     )
+    if escalate and no_safe_option and option_detail:
+        reason = f"{reason} {option_detail}".strip()
+    return escalate, reason
 
 
 def _resume_pending(understanding: Understanding, context: ConversationContext) -> Understanding:
     lowered = understanding.raw_message.lower().strip()
-    affirmative = lowered in {"yes", "yeah", "yep", "ok", "okay", "please", "please do"}
+    affirmative = is_informal_affirmative(understanding.raw_message)
     if context.pending_clarification == "options" and (
-        affirmative or understanding.intent == ConversationIntent.ASK_OPTIONS
+        affirmative
+        or understanding.intent == ConversationIntent.ASK_OPTIONS
+        or understanding.asks_options
     ):
-        understanding.intent = ConversationIntent.ASK_OPTIONS
-        context.pending_clarification = None
-        context.pending_intent = None
-        return understanding
+        if understanding.intent != ConversationIntent.ACCEPT_PROPOSAL or affirmative:
+            if not (understanding.confirm and "confirm" in lowered):
+                understanding.intent = ConversationIntent.ASK_OPTIONS
+                understanding.asks_options = True
+                context.pending_clarification = None
+                context.pending_intent = None
+                return understanding
     if context.pending_intent is None:
         return understanding
     subject_change = {
         ConversationIntent.ASK_STATUS,
+        ConversationIntent.ASK_APPOINTMENT,
         ConversationIntent.ASK_OPTIONS,
+        ConversationIntent.ASK_FEASIBILITY_STATUS,
         ConversationIntent.ASK_FACILITY_SCHEDULE,
         ConversationIntent.ACCEPT_PROPOSAL,
         ConversationIntent.REJECT_PROPOSAL,
@@ -455,12 +686,71 @@ def _resume_pending(understanding: Understanding, context: ConversationContext) 
     return understanding
 
 
+def _is_fresh_availability_query(message: str) -> bool:
+    lowered = message.lower()
+    return bool(
+        re.search(
+            r"\b(?:available|availability|next slot|next available|what slots|"
+            r"find (?:me )?(?:a |another )?slot|check availability|"
+            r"when can i (?:get in|come)|anything (?:later|after|open)|"
+            r"earliest available|do you have anything)\b",
+            lowered,
+        )
+    )
+
+
+def _bind_presented_selection(understanding: Understanding, context: ConversationContext) -> Understanding:
+    if not context.presented_options:
+        return understanding
+    if understanding.intent in {
+        ConversationIntent.ASK_STATUS,
+        ConversationIntent.ASK_APPOINTMENT,
+        ConversationIntent.ASK_FACILITY_SCHEDULE,
+        ConversationIntent.ASK_FEASIBILITY_STATUS,
+        ConversationIntent.HUMAN_ESCALATION,
+        ConversationIntent.UPDATE_ETA,
+        ConversationIntent.REPORT_DELAY,
+        ConversationIntent.REPORT_EXCEPTION,
+        ConversationIntent.REJECT_PROPOSAL,
+        ConversationIntent.CANCEL_REQUEST,
+    }:
+        return understanding
+    if understanding.earliest_start_local and understanding.intent == ConversationIntent.ASK_OPTIONS:
+        return understanding
+    if understanding.intent == ConversationIntent.ASK_OPTIONS and _is_fresh_availability_query(
+        understanding.raw_message
+    ):
+        return understanding
+    has_selection = bool(
+        understanding.option_index
+        or understanding.option_preference
+        or understanding.option_clock_local
+    )
+    if not has_selection:
+        return understanding
+    if understanding.intent == ConversationIntent.ASK_OPTIONS and not understanding.cannot_make_appointment:
+        understanding.intent = (
+            ConversationIntent.ACCEPT_PROPOSAL if understanding.confirm else ConversationIntent.PROPOSE_CHANGE
+        )
+        understanding.asks_options = False
+    option, _question = match_presented_option(
+        context,
+        option_index=understanding.option_index,
+        preference=understanding.option_preference,
+        clock_hhmm=understanding.option_clock_local,
+    )
+    if option is not None:
+        understanding.option_index = option.index
+    return understanding
+
+
 def _clarification_turn(
     intent: ConversationIntent,
     confidence: float,
     context: ConversationContext,
     question: str,
     pending: str | None = None,
+    results: list[ToolResult] | None = None,
 ) -> AgentTurn:
     context.pending_clarification = pending or context.pending_clarification or "general"
     if context.pending_intent is None:
@@ -470,6 +760,7 @@ def _clarification_turn(
         confidence=confidence,
         response=question,
         status="clarification",
+        tool_calls=results or [],
         requires_clarification=True,
         context=context,
         metadata=public_metadata({"requested_intent": intent.value}),
@@ -506,6 +797,14 @@ def _store_driver_constraints(understanding: Understanding, context: Conversatio
         context.earliest_start_local = understanding.earliest_start_local
     if understanding.leave_by_local:
         context.leave_by_local = understanding.leave_by_local
+    if understanding.repair_duration_minutes is not None:
+        context.repair_duration_minutes = understanding.repair_duration_minutes
+    if understanding.exception_type:
+        context.exception_type = understanding.exception_type
+    if understanding.eta_local:
+        context.explicit_eta_local = understanding.eta_local
+    if understanding.delay_minutes is not None:
+        context.reported_delay_minutes = understanding.delay_minutes
 
 
 def _leave_by_rejected_turn(

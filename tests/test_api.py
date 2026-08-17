@@ -171,7 +171,9 @@ class TestAppointmentAPI:
     def test_list_appointments(self, seeded_client: TestClient) -> None:
         response = seeded_client.get("/appointments")
         assert response.status_code == 200
-        assert response.json()["total"] == 2
+        payload = response.json()
+        assert payload["total"] == 2
+        assert all(item.get("shipment_number") for item in payload["items"])
 
     def test_filter_by_status(self, seeded_client: TestClient) -> None:
         response = seeded_client.get("/appointments", params={"appointment_status": "confirmed"})

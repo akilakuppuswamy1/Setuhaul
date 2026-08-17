@@ -16,5 +16,6 @@ class AppointmentResponse(BaseModel):
     dock_id: UUID | None
     status: AppointmentStatus
     notes: str | None
+    shipment_number: str | None = None
     created_at: datetime
     updated_at: datetime

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -16,7 +15,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.ai.conversation.executor import ToolExecutor
 from app.ai.conversation.provider import FakeLLMProvider
 from app.ai.conversation.tools import ALLOWED_TOOL_NAMES
-from app.core.config import settings
 from app.core.database import Base
 from app.core.exceptions import NotFoundError, SetuHaulError
 from app.models import (
@@ -55,24 +53,11 @@ from app.services.operations import DriverExceptionService, ETAUpdateService
 from app.services.proposal import ProposalService
 from app.services.scheduling import SchedulingService
 from app.services.shipment import ShipmentService
+from tests.db import postgres_test_url as _postgres_test_url
 
 
 def _utc(*args: int) -> datetime:
     return datetime(*args, tzinfo=timezone.utc)
-
-
-def _postgres_test_url() -> str | None:
-    url = os.environ.get("DATABASE_URL", settings.database_url)
-    if not url.startswith("postgresql"):
-        return None
-    try:
-        engine = create_engine(url, connect_args={"connect_timeout": 3})
-        with engine.connect() as connection:
-            connection.exec_driver_sql("SELECT 1")
-        engine.dispose()
-        return url
-    except Exception:
-        return None
 
 
 def _build_facility_world(

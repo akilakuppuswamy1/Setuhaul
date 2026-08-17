@@ -16,6 +16,9 @@ target_metadata = Base.metadata
 
 
 def get_url() -> str:
+    override = (config.get_main_option("sqlalchemy.url") or "").strip()
+    if override:
+        return override
     return settings.database_url
 
 

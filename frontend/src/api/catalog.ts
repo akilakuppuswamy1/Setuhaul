@@ -6,7 +6,7 @@ export function getHealth() {
 }
 
 export function listDrivers() {
-  return apiRequest<Paginated<Driver>>("/drivers?page=1&page_size=50");
+  return apiRequest<Paginated<Driver>>("/drivers?page=1&page_size=100");
 }
 
 export function getDriver(driverId: string) {
@@ -30,7 +30,7 @@ export function getAppointmentSlot(slotId: string) {
 }
 
 export function listAppointments(params: { facility_id?: string; shipment_id?: string; appointment_status?: string } = {}) {
-  const query = new URLSearchParams({ page: "1", page_size: "50" });
+  const query = new URLSearchParams({ page: "1", page_size: "100" });
   if (params.facility_id) query.set("facility_id", params.facility_id);
   if (params.shipment_id) query.set("shipment_id", params.shipment_id);
   if (params.appointment_status) query.set("appointment_status", params.appointment_status);

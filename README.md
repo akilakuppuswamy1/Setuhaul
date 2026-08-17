@@ -538,7 +538,7 @@ Bounds: evaluation is capped (50 shipments, 100 slots in the service). No `POST 
 
 Verified UX details (not a full WCAG audit): `aria-label` / `role="log"` / `aria-live` on the console; `:focus-visible` outlines; responsive layout via `@media` breakpoints and a mobile menu overlay in `global.css`.
 
-Vitest: **5 passed**. Production build: **passed**.
+Vitest: **35 passed**. Production build: **passed**.
 
 ---
 
@@ -679,7 +679,7 @@ Verified in code and Step 8H / 9 tests:
 ### Backend (verified)
 
 ```
-399 passed
+557 passed
 0 failed
 0 skipped
 1 warning
@@ -691,6 +691,8 @@ pytest -v
 
 API and model tests use in-memory SQLite. Migration and concurrency tests require PostgreSQL (`docker compose up -d`).
 
+**Test database boundary:** pytest never uses `DATABASE_URL` for `DROP SCHEMA` / schema reset. Destructive PostgreSQL tests connect to `TEST_DATABASE_URL` (`setuhaul_test` by default). The live demo database `setuhaul` is protected. On first run, pytest creates `setuhaul_test` if it does not exist. Copy `TEST_DATABASE_URL` from `.env.example` into `.env`.
+
 ```bash
 pytest tests/test_api.py tests/test_health.py tests/test_models.py tests/test_models_hardening.py -v
 ```
@@ -698,7 +700,7 @@ pytest tests/test_api.py tests/test_health.py tests/test_models.py tests/test_mo
 ### Frontend (verified)
 
 ```
-5 passed
+35 passed
 ```
 
 ```bash
@@ -796,9 +798,17 @@ uvicorn app.main:app --reload --port 8010 --host 127.0.0.1
 python scripts/seed_ops_demo.py
 ```
 
-Creates (or reuses) shipment **SH-1024**, driver Jane Rivera, Dallas Distribution Center, original **6:30 PM** appointment, and later open slots. Frozen schema unchanged. Unique codes skip insert on re-run.
+Creates (or reuses) the classroom dataset on **DATABASE_URL only** (database `setuhaul`). The script prints host/port/database/profile and **aborts** if the target is `postgres`, `template0`, `template1`, or `setuhaul_test`. Frozen schema unchanged. Unique codes skip insert on re-run.
 
-`scripts/seed_data.py` is a broader Step 2 domain seed for model validation; it is not the operations-console hero snapshot.
+Includes:
+
+- Dallas walkthrough: shipment **SH-1024**, Jane Rivera, original **6:30 PM** appointment (requested), later open slots.
+- Chicago Cross-Dock scarce evening capacity: **SHP-DEMO-001–005** (Alex / Priya / Ravi / Maya / Daniel) competing for **3** compatible 8:00 PM windows.
+- Reschedule fixture **SHP-DEMO-RESCHEDULE** (confirmed 6:30 PM, open 8:30 PM — seed does not pre-confirm the later slot).
+- Concurrency fixture **SHP-DEMO-RACE** (capacity-1 proposal; does not consume capacity; no winner/loser rows).
+- No-capacity fixture **SHP-DEMO-NOCAP** (9:15 PM ETA; only containing slot is already confirmed).
+
+`scripts/seed_data.py` is a broader Step 2 domain seed for model validation; it is not the operations-console snapshot.
 
 ### 7. Frontend
 
@@ -849,7 +859,8 @@ Copy from `.env.example` only. **Never commit `.env` or API keys.**
 
 | Variable | Purpose |
 |----------|---------|
-| `DATABASE_URL` | PostgreSQL (`postgresql+psycopg://setuhaul:setuhaul@localhost:5433/setuhaul`) |
+| `DATABASE_URL` | Live/demo PostgreSQL (`postgresql+psycopg://setuhaul:setuhaul@localhost:5433/setuhaul`) |
+| `TEST_DATABASE_URL` | Pytest-only PostgreSQL (`.../setuhaul_test`). Never the demo database. |
 | `APP_ENV` | `development` by default |
 | `LLM_PROVIDER` | `fake` (safe default) or `openrouter` |
 | `LLM_API_KEY` | Required only for OpenRouter; empty → fake fallback |
@@ -935,8 +946,8 @@ Assignment language mapped to this repository (no fabricated requirement IDs).
 | Concurrency / stale proposals | Locks + revalidation | HTTP 409; `tests/test_step7_concurrency.py`; live conflict path |
 | Frozen system of record | Step 2 / 2H | 16 tables; `tests/test_migration.py`; ER diagram |
 | Optional multi-truck ranking | Step 9 `SchedulingEngine` | `POST /facilities/{id}/schedule/evaluate`; `tests/test_step9_scheduling.py` |
-| Operations console | `frontend/` | Routes in `App.tsx`; 5 Vitest tests; production build |
-| Deterministic, testable decisions | Python engines/services | 399 backend tests; FakeLLM default |
+| Operations console | `frontend/` | Routes in `App.tsx`; 35 Vitest tests; production build |
+| Deterministic, testable decisions | Python engines/services | 557 backend tests; FakeLLM default |
 
 ---
 
@@ -1012,7 +1023,7 @@ setuhaul/
 | Step 9 read-only ranking | Met |
 | Frontend console (React 19 / Vite) | Met |
 | PostgreSQL on 5433; API 8010; UI 5173 | Met (verified demo env) |
-| Tests 399 / 0 / 0 + 5 frontend + build | Met (verified counts) |
+| Tests 557 / 0 / 0 + 35 frontend + build | Met (verified counts, Phase 5) |
 | Security: allowlist, injection, no AI SQL | Met for classroom scope |
 | Auth: production identity | **Not implemented** (documented limitation) |
 | E2E hero + conflict + Step 9 evaluate | Met |

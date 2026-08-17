@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _CLOCK = (
-    r"(?P<hour>\d{1,2})(?::(?P<minute>[0-5]\d))?\s*(?P<meridiem>a\.?m\.?|p\.?m\.?)?"
+    r"(?P<hour>\d{1,2})(?:[:.\s](?P<minute>[0-5]\d))?\s*(?P<meridiem>a\.?m\.?|p\.?m\.?)?"
 )
 _AFTER = re.compile(
     r"(?:after|later than|later then)\s+" + _CLOCK,
+    flags=re.IGNORECASE,
+)
+_DEADLINE = re.compile(
+    r"\b(?:by|before)\s+" + _CLOCK,
     flags=re.IGNORECASE,
 )
 _LEAVE_BY = re.compile(
@@ -18,12 +22,19 @@ _LEAVE_BY = re.compile(
     r"got to leave by|gotta leave by)\s+" + _CLOCK,
     flags=re.IGNORECASE,
 )
-_ETA = re.compile(
-    r"(?:(?:i(?:'ll| will)\s+)?reach(?:\s+around)?|arrive(?:\s+around)?|"
-    r"(?:my\s+)?eta(?:\s+is)?|reach around)\s+" + _CLOCK,
+_ARRIVAL_CUE = re.compile(
+    r"\b(?:reach|arrive|arriving|be there|get there|expect me|show up|(?:my\s+)?eta)\b",
     flags=re.IGNORECASE,
 )
 _SUPPOSED = re.compile(r"supposed to\s+(?:reach|arrive)", flags=re.IGNORECASE)
+_SUPPOSED_CLOCK = re.compile(
+    r"supposed to\s+(?:reach|arrive)(?:\s+by)?\s+" + _CLOCK,
+    flags=re.IGNORECASE,
+)
+_RELATIVE_DELAY_AFTER_CLOCK = re.compile(
+    r"^\s*(?:hours?|hrs?|minutes?)\s+(?:late|behind)\b",
+    flags=re.IGNORECASE,
+)
 
 
 def parse_earliest_start_local(lowered: str) -> str | None:
@@ -40,33 +51,59 @@ def parse_leave_by_local(lowered: str) -> str | None:
     return _match_to_hhmm(match)
 
 
-def parse_eta_local(lowered: str) -> str | None:
+def parse_original_appointment_local(lowered: str) -> str | None:
+    match = _SUPPOSED_CLOCK.search(lowered)
+    if match is None:
+        return None
+    return _match_to_hhmm(match)
+
+
+def parse_completion_by_local(lowered: str) -> str | None:
+    """Clock after by/before when asking whether the current plan finishes in time."""
     last: str | None = None
-    for match in _ETA.finditer(lowered):
-        start = match.start()
-        prefix = lowered[max(0, start - 24) : start]
+    for match in _DEADLINE.finditer(lowered):
+        prefix = lowered[max(0, match.start() - 20) : match.start()]
+        if re.search(r"\bleav(?:e|ing)\b", prefix, flags=re.IGNORECASE):
+            continue
+        hhmm = _match_to_hhmm(match)
+        if hhmm:
+            last = hhmm
+    return last
+
+
+def parse_eta_local(lowered: str) -> str | None:
+    """Explicit arrival clock. Leave-by and 'N hours late' are not arrival times."""
+    last: str | None = None
+    for cue in _ARRIVAL_CUE.finditer(lowered):
+        prefix = lowered[max(0, cue.start() - 24) : cue.start()]
         if _SUPPOSED.search(prefix):
             continue
-        last = _match_to_hhmm(match)
+        window = lowered[cue.end() : cue.end() + 48]
+        match = re.search(_CLOCK, window, flags=re.IGNORECASE)
+        if match is None:
+            continue
+        if _RELATIVE_DELAY_AFTER_CLOCK.search(window[match.end() :]):
+            continue
+        hhmm = _match_to_hhmm(match)
+        if hhmm:
+            last = hhmm
     return last
 
 
 def asks_informal_options(lowered: str) -> bool:
-    return any(
-        phrase in lowered
-        for phrase in (
-            "anything after",
-            "anything later",
-            "any slots after",
-            "slots after",
-            "come after",
-            "options after",
-            "available after",
-            "do you have anything",
-            "later than",
-            "anything available after",
-        )
-    )
+    if re.search(
+        r"\b(?:any(?:thing)?|something)\b.{0,28}\b(?:after|later|open|available|tonight|around then)\b",
+        lowered,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if re.search(r"\b(?:later|after)\s+than\b", lowered, flags=re.IGNORECASE):
+        return True
+    if re.search(r"\bdo you have anything\b", lowered, flags=re.IGNORECASE):
+        return True
+    if re.search(r"\b(?:slots?|options?)\s+after\b", lowered, flags=re.IGNORECASE):
+        return True
+    return bool(re.search(r"\b(?:come|available)\s+after\b", lowered, flags=re.IGNORECASE))
 
 
 def slot_starts_on_or_after(
@@ -113,12 +150,48 @@ def localize_clock_on(
     return datetime.combine(local_ref.date(), time(hour, minute), tzinfo=tz)
 
 
+def localize_operational_clock(
+    reference: datetime,
+    hhmm: str,
+    timezone_name: str | None,
+) -> datetime | None:
+    """Place a local clock on the operational day of `reference`.
+
+    Early-morning clocks (before noon) that accompany an afternoon/evening
+    reference roll to the next calendar day so 2:00 AM after 8:30 PM is overnight,
+    not the same morning.
+    """
+    bound = localize_clock_on(reference, hhmm, timezone_name)
+    if bound is None:
+        return None
+    parsed = parse_hhmm(hhmm)
+    if parsed is None:
+        return bound
+    hour, _minute = parsed
+    local_ref = _aware(reference).astimezone(resolve_zone(timezone_name))
+    if hour < 12 and local_ref.hour >= 12:
+        return bound + timedelta(days=1)
+    return bound
+
+
 def resolve_zone(timezone_name: str | None) -> ZoneInfo:
     name = (timezone_name or "UTC").strip() or "UTC"
     try:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, KeyError, ValueError):
         return ZoneInfo("UTC")
+
+
+def parse_clock_tokens(lowered: str) -> list[str]:
+    found: list[str] = []
+    for match in re.finditer(_CLOCK, lowered, flags=re.IGNORECASE):
+        following = lowered[match.end() : match.end() + 16]
+        if re.match(r"\s*(?:hours?|hrs?|minutes?)\b", following):
+            continue
+        hhmm = _match_to_hhmm(match)
+        if hhmm:
+            found.append(hhmm)
+    return found
 
 
 def parse_hhmm(value: str) -> tuple[int, int] | None:

@@ -48,6 +48,7 @@ class ConversationService:
         self._drivers = DriverService(session)
         self._shipments = ShipmentService(session)
         self._facilities = FacilityService(session)
+        self._proposals = ProposalService(session)
         self._executor = ToolExecutor(
             shipment_service=self._shipments,
             eta_service=ETAUpdateService(session),
@@ -56,6 +57,7 @@ class ConversationService:
             slot_service=AppointmentSlotService(session),
             proposal_service=ProposalService(session),
             scheduling_service=SchedulingService(session),
+            facility_service=self._facilities,
         )
         resolved_provider = provider or get_llm_provider(
             provider_name=settings.llm_provider,
@@ -184,6 +186,13 @@ class ConversationService:
         timezone_name = self._facility_timezone_for(context.shipment_id or thread.shipment_id)
         if timezone_name:
             context.facility_timezone = timezone_name
+        shipment_id = context.shipment_id or thread.shipment_id
+        if shipment_id is not None and context.proposal_id is None:
+            candidates, pending = self._proposals.find_for_conversation(shipment_id)
+            context.pending_proposal_count = pending
+            if candidates and pending <= 1:
+                context.proposal_id = candidates[0].proposal_id
+                context.proposal_slot_id = candidates[0].slot_id
         return context
 
     def _facility_timezone_for(self, shipment_id: UUID | None) -> str | None:

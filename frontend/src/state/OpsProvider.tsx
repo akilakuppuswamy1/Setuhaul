@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -44,6 +45,14 @@ import type {
   Shipment,
   ToolCallRecord,
 } from "@/api/types";
+import {
+  hasSupersededHistory,
+  pickCurrentAppointment,
+  pickOriginalAppointment,
+  pickPendingProposalAppointment,
+  pickStaleProposalAppointment,
+} from "@/lib/appointments";
+import { isConversationThreadMissing, sendDriverMessage } from "@/lib/conversationThread";
 import { loadingCopy } from "@/lib/format";
 
 export interface ConsoleMessage {
@@ -68,6 +77,7 @@ interface OpsState {
   latestEta: string | null;
   exceptions: DriverException[];
   docks: Dock[];
+  shipments: Shipment[];
   threadId: string | null;
   messages: ConsoleMessage[];
   options: PresentedOption[];
@@ -76,6 +86,7 @@ interface OpsState {
   proposalSlot: AppointmentSlot | null;
   proposalDock: Dock | null;
   originalSlot: AppointmentSlot | null;
+  currentSlot: AppointmentSlot | null;
   conflict: ApiError | null;
   lastIntent: string | null;
   lastStatus: string | null;
@@ -93,10 +104,13 @@ interface OpsState {
 interface OpsContextValue extends OpsState {
   timezone: string | undefined;
   originalAppointment: Appointment | undefined;
+  currentAppointment: Appointment | undefined;
+  rescheduled: boolean;
   setComposer: (value: string) => void;
   send: (text?: string) => Promise<void>;
   startConversation: () => Promise<void>;
   refreshOperational: () => Promise<void>;
+  selectShipment: (shipmentId: string) => Promise<void>;
   selectOption: (option: PresentedOption) => Promise<void>;
   confirmProposal: () => Promise<void>;
   rejectCurrentProposal: () => Promise<void>;
@@ -114,12 +128,6 @@ function metadataOptions(meta: ConversationMessageResponse["metadata"] | ChatMes
   return [];
 }
 
-function pickOriginalAppointment(appointments: Appointment[]): Appointment | undefined {
-  const labeled = appointments.find((item) => (item.notes ?? "").includes("Original 6:30"));
-  if (labeled) return labeled;
-  return [...appointments].sort((a, b) => a.created_at.localeCompare(b.created_at))[0];
-}
-
 export function OpsProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<OpsState>({
     healthOk: null,
@@ -132,6 +140,7 @@ export function OpsProvider({ children }: { children: ReactNode }) {
     latestEta: null,
     exceptions: [],
     docks: [],
+    shipments: [],
     threadId: null,
     messages: [],
     options: [],
@@ -140,6 +149,7 @@ export function OpsProvider({ children }: { children: ReactNode }) {
     proposalSlot: null,
     proposalDock: null,
     originalSlot: null,
+    currentSlot: null,
     conflict: null,
     lastIntent: null,
     lastStatus: null,
@@ -153,6 +163,7 @@ export function OpsProvider({ children }: { children: ReactNode }) {
     confirming: false,
     conversationReady: false,
   });
+  const boundShipmentId = useRef<string | null>(null);
 
   const timezone = state.facility?.timezone;
 
@@ -166,7 +177,14 @@ export function OpsProvider({ children }: { children: ReactNode }) {
         proposal = null;
       }
     }
-    setState((prev) => ({
+      const acceptFailed = (turn.tool_calls ?? []).some(
+        (call) => call.name === "accept_proposal" && call.success === false,
+      );
+      const staleTurn = turn.status === "stale" || turn.status === "conflict" || acceptFailed;
+      if (staleTurn && proposal?.status === "confirmed") {
+        proposal = null;
+      }
+      setState((prev) => ({
       ...prev,
       messages: [
         ...prev.messages,
@@ -189,13 +207,26 @@ export function OpsProvider({ children }: { children: ReactNode }) {
       ],
       options: options.length ? options : prev.options,
       selectedOptionIndex: turn.metadata?.selected_option_index ?? prev.selectedOptionIndex,
-      proposal: proposal ?? prev.proposal,
+      proposal: staleTurn
+        ? proposal && proposal.status !== "confirmed"
+          ? proposal
+          : prev.proposal
+            ? { ...prev.proposal, status: "stale" }
+            : null
+        : (proposal ?? prev.proposal),
       lastIntent: turn.intent,
       lastStatus: turn.status,
       lastToolCalls: turn.tool_calls,
       requiresHuman: turn.requires_human,
       escalationReason: turn.metadata?.escalation_reason ?? prev.escalationReason,
-      conflict: turn.status === "stale" || turn.status === "conflict" ? new ApiError(409, turn.response, turn.status) : prev.conflict,
+      conflict: staleTurn
+        ? new ApiError(
+            409,
+            turn.response ||
+              "That appointment is no longer available because another confirmation was completed first.",
+            turn.status || "stale",
+          )
+        : prev.conflict,
     }));
     if (turn.shipment_id && turn.shipment_id !== state.shipment?.id) {
       await loadShipment(turn.shipment_id);
@@ -203,6 +234,7 @@ export function OpsProvider({ children }: { children: ReactNode }) {
   }, [state.shipment?.id]);
 
   const loadShipment = useCallback(async (shipmentId: string) => {
+    boundShipmentId.current = shipmentId;
     const [shipment, latest, etas, exceptions, appointments] = await Promise.all([
       getShipment(shipmentId),
       getLatestEta(shipmentId),
@@ -210,6 +242,7 @@ export function OpsProvider({ children }: { children: ReactNode }) {
       listShipmentExceptions(shipmentId),
       listShipmentAppointments(shipmentId),
     ]);
+    if (boundShipmentId.current !== shipmentId) return;
     const driver = shipment.driver_id ? await getDriver(shipment.driver_id) : null;
     const facility = shipment.destination_facility_id
       ? await getFacility(shipment.destination_facility_id)
@@ -217,6 +250,26 @@ export function OpsProvider({ children }: { children: ReactNode }) {
     const docks = shipment.destination_facility_id
       ? (await listFacilityDocks(shipment.destination_facility_id)).items
       : [];
+    const pendingRow = pickPendingProposalAppointment(appointments.items);
+    const staleRow = pickStaleProposalAppointment(appointments.items);
+    let proposal: Proposal | null = null;
+    let conflict: ApiError | null = null;
+    const hydrateId = pendingRow?.id ?? staleRow?.id;
+    if (hydrateId) {
+      try {
+        proposal = await getProposal(hydrateId);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 409) {
+          conflict = error;
+        }
+      }
+    }
+    if (!pendingRow && (proposal?.status === "stale" || Boolean(staleRow))) {
+      conflict =
+        conflict ??
+        new ApiError(409, "This option is no longer available. The previously proposed slot was taken.", "stale");
+    }
+    if (boundShipmentId.current !== shipmentId) return;
     setState((prev) => ({
       ...prev,
       shipment,
@@ -227,6 +280,10 @@ export function OpsProvider({ children }: { children: ReactNode }) {
       exceptions: exceptions.items,
       appointments: appointments.items,
       docks,
+      proposal: proposal ?? (prev.shipment?.id === shipment.id ? prev.proposal : null),
+      conflict: conflict ?? (prev.shipment?.id === shipment.id ? prev.conflict : null),
+      loading: false,
+      loadingLabel: null,
     }));
   }, []);
 
@@ -252,7 +309,11 @@ export function OpsProvider({ children }: { children: ReactNode }) {
     }
     try {
       const listed = await listShipments();
+      setState((prev) => ({ ...prev, shipments: listed.items }));
+      if (boundShipmentId.current) return;
       const preferred =
+        listed.items.find((item) => item.shipment_number === "SHP-DEMO-001") ??
+        listed.items.find((item) => item.shipment_number === "SHP-CHI-5437") ??
         listed.items.find((item) => item.shipment_number === "SH-1024") ??
         listed.items.find((item) => item.driver_id && item.is_active) ??
         listed.items[0];
@@ -263,6 +324,7 @@ export function OpsProvider({ children }: { children: ReactNode }) {
         }));
         return;
       }
+      if (boundShipmentId.current) return;
       await loadShipment(preferred.id);
     } catch (error) {
       setState((prev) => ({
@@ -291,32 +353,46 @@ export function OpsProvider({ children }: { children: ReactNode }) {
 
   const startConversation = useCallback(async () => {
     if (!state.driver || !state.shipment) return;
-    setState((prev) => ({ ...prev, loading: true, loadingLabel: "Opening conversation…", error: null }));
+    const shipmentId = state.shipment.id;
+    const driverId = state.driver.id;
+    const shipmentNumber = state.shipment.shipment_number;
+    setState((prev) => {
+      if (prev.threadId || prev.shipment?.id !== shipmentId) return prev;
+      return { ...prev, loading: true, loadingLabel: "Opening conversation…", error: null };
+    });
     try {
       const created = await createConversation({
-        driver_id: state.driver.id,
-        shipment_id: state.shipment.id,
-        subject: `Driver console · ${state.shipment.shipment_number}`,
+        driver_id: driverId,
+        shipment_id: shipmentId,
+        subject: `Driver console · ${shipmentNumber}`,
       });
-      setState((prev) => ({
-        ...prev,
-        threadId: created.thread_id,
-        messages: [],
-        options: [],
-        proposal: null,
-        conflict: null,
-        lastIntent: null,
-        lastStatus: created.status,
-        conversationReady: true,
-      }));
+      if (boundShipmentId.current && boundShipmentId.current !== shipmentId) return;
+      setState((prev) => {
+        if (prev.shipment?.id !== shipmentId) return prev;
+        if (prev.threadId) {
+          return { ...prev, conversationReady: true };
+        }
+        return {
+          ...prev,
+          threadId: created.thread_id,
+          messages: [],
+          lastIntent: null,
+          lastStatus: created.status,
+          conversationReady: true,
+        };
+      });
     } catch (error) {
-      setState((prev) => ({
-        ...prev,
-        conversationReady: true,
-        error: error instanceof ApiError ? error.message : "Could not create conversation.",
-      }));
+      if (boundShipmentId.current && boundShipmentId.current !== shipmentId) return;
+      setState((prev) => {
+        if (prev.shipment?.id !== shipmentId) return prev;
+        return {
+          ...prev,
+          conversationReady: true,
+          error: error instanceof ApiError ? error.message : "Could not create conversation.",
+        };
+      });
     } finally {
-      setState((prev) => ({ ...prev, loading: false, loadingLabel: null }));
+      setState((prev) => (prev.shipment?.id === shipmentId ? { ...prev, loading: false, loadingLabel: null } : prev));
     }
   }, [state.driver, state.shipment]);
 
@@ -328,6 +404,15 @@ export function OpsProvider({ children }: { children: ReactNode }) {
 
   const hydrateThread = useCallback(async (threadId: string) => {
     const [thread, page] = await Promise.all([getChatThread(threadId), listChatMessages(threadId)]);
+    if (thread.shipment_id && boundShipmentId.current && thread.shipment_id !== boundShipmentId.current) {
+      setState((prev) => ({
+        ...prev,
+        threadId: null,
+        messages: [],
+        conversationReady: false,
+      }));
+      return;
+    }
     const mapped: ConsoleMessage[] = page.items.map((item) => ({
       id: item.id,
       role: item.direction === "inbound" ? "driver" : "assistant",
@@ -351,7 +436,15 @@ export function OpsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (state.threadId && !state.conversationReady) {
-      void hydrateThread(state.threadId).catch(() => undefined);
+      void hydrateThread(state.threadId).catch((error: unknown) => {
+        if (isConversationThreadMissing(error) || (error instanceof ApiError && error.status === 404)) {
+          setState((prev) => ({
+            ...prev,
+            threadId: null,
+            conversationReady: false,
+          }));
+        }
+      });
     }
   }, [hydrateThread, state.conversationReady, state.threadId]);
 
@@ -373,16 +466,23 @@ export function OpsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    async function loadOriginalSlot() {
-      const appointment = pickOriginalAppointment(state.appointments);
-      if (!appointment?.appointment_slot_id) {
-        if (!cancelled) setState((prev) => ({ ...prev, originalSlot: null }));
-        return;
+    async function loadAppointmentSlots() {
+      const original = pickOriginalAppointment(state.appointments);
+      const current = pickCurrentAppointment(state.appointments);
+      const originalSlot = original?.appointment_slot_id
+        ? await getAppointmentSlot(original.appointment_slot_id)
+        : null;
+      let currentSlot: AppointmentSlot | null = null;
+      if (current?.appointment_slot_id) {
+        if (current.appointment_slot_id === original?.appointment_slot_id) {
+          currentSlot = originalSlot;
+        } else {
+          currentSlot = await getAppointmentSlot(current.appointment_slot_id);
+        }
       }
-      const slot = await getAppointmentSlot(appointment.appointment_slot_id);
-      if (!cancelled) setState((prev) => ({ ...prev, originalSlot: slot }));
+      if (!cancelled) setState((prev) => ({ ...prev, originalSlot, currentSlot }));
     }
-    void loadOriginalSlot();
+    void loadAppointmentSlots();
     return () => {
       cancelled = true;
     };
@@ -391,7 +491,7 @@ export function OpsProvider({ children }: { children: ReactNode }) {
   const send = useCallback(
     async (text?: string) => {
       const message = (text ?? state.composer).trim();
-      if (!message || !state.threadId) return;
+      if (!message || !state.driver || !state.shipment) return;
       const kind = /confirm it|book it|lock it in/i.test(message) ? "confirm" : "message";
       setState((prev) => ({
         ...prev,
@@ -403,12 +503,32 @@ export function OpsProvider({ children }: { children: ReactNode }) {
         confirming: kind === "confirm",
       }));
       try {
-        const turn = await sendConversationMessage(state.threadId, message);
-        await applyTurn(turn, message);
+        const result = await sendDriverMessage({
+          threadId: state.threadId,
+          message,
+          driverId: state.driver.id,
+          shipmentId: state.shipment.id,
+          shipmentNumber: state.shipment.shipment_number,
+          createConversation,
+          sendConversationMessage,
+        });
+        setState((prev) => ({
+          ...prev,
+          threadId: result.threadId,
+          conversationReady: true,
+        }));
+        await applyTurn(result.turn, message);
         await refreshOperational();
       } catch (error) {
         if (error instanceof ApiError && error.status === 409) {
-          setState((prev) => ({ ...prev, conflict: error }));
+          setState((prev) => ({
+            ...prev,
+            conflict: new ApiError(
+              409,
+              "That appointment is no longer available because another confirmation was completed first.",
+              error.code,
+            ),
+          }));
         } else {
           setState((prev) => ({
             ...prev,
@@ -419,7 +539,7 @@ export function OpsProvider({ children }: { children: ReactNode }) {
         setState((prev) => ({ ...prev, loading: false, loadingLabel: null, confirming: false }));
       }
     },
-    [applyTurn, refreshOperational, state.composer, state.threadId],
+    [applyTurn, refreshOperational, state.composer, state.driver, state.shipment, state.threadId],
   );
 
   const selectOption = useCallback(
@@ -431,19 +551,26 @@ export function OpsProvider({ children }: { children: ReactNode }) {
   );
 
   const confirmProposal = useCallback(async () => {
-    if (state.threadId) {
-      await send("Confirm it.");
+    if (!state.proposal) {
+      if (state.threadId) await send("Confirm it.");
       return;
     }
-    if (!state.proposal) return;
     setState((prev) => ({ ...prev, loading: true, loadingLabel: "Revalidating…", confirming: true }));
     try {
       const proposal = await acceptProposal(state.proposal.proposal_id);
       setState((prev) => ({ ...prev, proposal, conflict: null }));
       await refreshOperational();
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409) {
-        setState((prev) => ({ ...prev, conflict: error }));
+      if (error instanceof ApiError && (error.status === 409 || /stale|no longer available|conflict/i.test(error.message))) {
+        setState((prev) => ({
+          ...prev,
+          conflict: new ApiError(
+            error.status,
+            "That appointment is no longer available because another confirmation was completed first.",
+            error.code,
+          ),
+          proposal: prev.proposal ? { ...prev.proposal, status: "stale" } : prev.proposal,
+        }));
       } else {
         setState((prev) => ({
           ...prev,
@@ -465,20 +592,66 @@ export function OpsProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, proposal }));
   }, [send, state.proposal, state.threadId]);
 
+  const selectShipment = useCallback(
+    async (shipmentId: string) => {
+      if (!shipmentId || shipmentId === state.shipment?.id) return;
+      const next = state.shipments.find((item) => item.id === shipmentId) ?? null;
+      setState((prev) => ({
+        ...prev,
+        shipment: next ?? prev.shipment,
+        driver: null,
+        threadId: null,
+        messages: [],
+        options: [],
+        selectedOptionIndex: null,
+        proposal: null,
+        proposalSlot: null,
+        proposalDock: null,
+        originalSlot: null,
+        currentSlot: null,
+        conflict: null,
+        lastIntent: null,
+        lastStatus: null,
+        lastToolCalls: [],
+        requiresHuman: false,
+        escalationReason: null,
+        conversationReady: false,
+        error: null,
+        composer: "",
+        loading: false,
+        loadingLabel: null,
+        confirming: false,
+      }));
+      await loadShipment(shipmentId);
+    },
+    [loadShipment, state.shipment?.id, state.shipments],
+  );
+
   const originalAppointment = useMemo(() => pickOriginalAppointment(state.appointments), [state.appointments]);
+  const currentAppointment = useMemo(() => pickCurrentAppointment(state.appointments), [state.appointments]);
+  const rescheduled = useMemo(
+    () => Boolean(currentAppointment && hasSupersededHistory(state.appointments)),
+    [currentAppointment, state.appointments],
+  );
 
   const value: OpsContextValue = {
     ...state,
     timezone,
     originalAppointment,
+    currentAppointment,
+    rescheduled,
     setComposer: (composer) => setState((prev) => ({ ...prev, composer })),
     send,
     startConversation,
     refreshOperational,
+    selectShipment,
     selectOption,
     confirmProposal,
     rejectCurrentProposal,
-    findNewOptions: () => setState((prev) => ({ ...prev, composer: "What options do I have?", conflict: null })),
+    findNewOptions: () => {
+      setState((prev) => ({ ...prev, conflict: null }));
+      void send("What options do I have?");
+    },
   };
 
   return <OpsContext.Provider value={value}>{children}</OpsContext.Provider>;

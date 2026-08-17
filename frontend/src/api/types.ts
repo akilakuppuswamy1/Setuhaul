@@ -128,6 +128,7 @@ export interface Facility {
 export interface Appointment {
   id: string;
   shipment_id: string;
+  shipment_number?: string | null;
   facility_id: string;
   appointment_slot_id: string | null;
   dock_id: string | null;

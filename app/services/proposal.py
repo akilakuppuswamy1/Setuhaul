@@ -145,6 +145,7 @@ class ProposalService:
                 appointment_slot_id=payload.appointment_slot_id,
                 dock_id=payload.dock_id,
                 evaluated_at=evaluated_at,
+                ignore_delay_exceptions=True,
             ),
         )
 
@@ -183,6 +184,35 @@ class ProposalService:
             self._expire_proposal(appointment)
             safe_commit(self._session)
         return self._to_response(appointment, status=status, message="Proposal retrieved")
+
+    def find_for_conversation(self, shipment_id: UUID) -> tuple[list[ProposalResponse], int]:
+        """Deterministic lookup of pending (and recent stale) proposals for a shipment.
+
+        Returns (candidates, pending_requested_count). Does not accept or allocate.
+        """
+        items, _ = self._appointment_repo.list_by_shipment(shipment_id, page=1, page_size=50)
+        proposals = [item for item in items if _is_proposal_record(item)]
+        now = datetime.now(timezone.utc)
+        requested = [
+            item
+            for item in proposals
+            if item.status == AppointmentStatus.REQUESTED
+            and self._resolve_status(item, now) == ProposalStatus.PROPOSED
+        ]
+        requested.sort(key=lambda item: (item.created_at, str(item.id)), reverse=True)
+        if requested:
+            return [self._to_response(item, status=ProposalStatus.PROPOSED, message="Pending proposal") for item in requested], len(requested)
+        stale = [
+            item
+            for item in proposals
+            if self._resolve_status(item, now) == ProposalStatus.STALE
+            and _parse_confirmed_appointment_id(item.notes) is None
+        ]
+        stale.sort(key=lambda item: (item.updated_at, str(item.id)), reverse=True)
+        if stale:
+            latest = stale[0]
+            return [self._to_response(latest, status=ProposalStatus.STALE, message="Stale proposal")], 0
+        return [], 0
 
     def reject(self, proposal_id: UUID) -> ProposalResponse:
         appointment = self._get_proposal_appointment(proposal_id)
@@ -225,8 +255,9 @@ class ProposalService:
         shipment_id = appointment.shipment_id
 
         try:
-            self._appointment_repo.acquire_shipment_advisory_lock(shipment_id)
-            appointment = self._get_proposal_appointment(proposal_id)
+            if not self._appointment_repo.try_acquire_shipment_advisory_lock(shipment_id):
+                raise ConflictError("Proposal is stale: concurrent_confirmation")
+            appointment = self._get_proposal_appointment(proposal_id, locked=True)
             now = datetime.now(timezone.utc)
 
             confirmed_id = _parse_confirmed_appointment_id(appointment.notes)
@@ -261,7 +292,7 @@ class ProposalService:
                 raise SetuHaulError("Cannot accept a rejected proposal")
 
             if current == ProposalStatus.STALE:
-                raise SetuHaulError("Cannot accept a stale proposal")
+                raise ConflictError("Proposal is stale: slot no longer available")
 
             self._ensure_acceptable_transition(current, ProposalStatus.ACCEPTED)
 
@@ -294,6 +325,7 @@ class ProposalService:
                     appointment_slot_id=slot_id,
                     dock_id=dock_id,
                     evaluated_at=now,
+                    ignore_delay_exceptions=True,
                 ),
             )
 
@@ -315,6 +347,9 @@ class ProposalService:
                         dock_id=dock_id,
                         evaluated_at=now,
                     ),
+                    commit=False,
+                    replace_active=True,
+                    ignore_delay_exceptions=True,
                 )
             except ConflictError as exc:
                 reconciled = self._try_reconcile_confirmed(appointment)
@@ -361,8 +396,11 @@ class ProposalService:
             appointment_id=matching.id,
         )
 
-    def _get_proposal_appointment(self, proposal_id: UUID) -> Appointment:
-        appointment = self._appointment_repo.get_by_id(proposal_id)
+    def _get_proposal_appointment(self, proposal_id: UUID, *, locked: bool = False) -> Appointment:
+        if locked:
+            appointment = self._appointment_repo.get_by_id_locked(proposal_id)
+        else:
+            appointment = self._appointment_repo.get_by_id(proposal_id)
         if appointment is None:
             raise NotFoundError(f"Proposal {proposal_id} not found")
         if not _is_proposal_record(appointment):

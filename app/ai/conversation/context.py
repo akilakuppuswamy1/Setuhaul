@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+from app.ai.conversation.clocks import parse_hhmm, resolve_zone
 from app.ai.conversation.intents import parse_uuid
 from app.ai.conversation.models import (
     CandidateShipment,
@@ -85,6 +87,89 @@ def resolve_option(context: ConversationContext, option_index: int | None) -> Pr
     return None
 
 
+def match_presented_option(
+    context: ConversationContext,
+    *,
+    option_index: int | None = None,
+    preference: str | None = None,
+    clock_hhmm: str | None = None,
+) -> tuple[PresentedOption | None, str | None]:
+    """Map language onto an already presented option. Never invents a slot."""
+    options = list(context.presented_options)
+    if not options:
+        return None, None
+    if option_index is not None:
+        matched = resolve_option(context, option_index)
+        if matched is None:
+            return None, "I couldn't match that to a presented option. Which numbered option do you mean?"
+        return matched, None
+    if clock_hhmm:
+        hits = [item for item in options if _option_matches_clock(item, clock_hhmm, context.facility_timezone)]
+        if len(hits) == 1:
+            return hits[0], None
+        if len(hits) > 1:
+            return None, "More than one shown option matches that time. Which numbered option do you mean?"
+        return None, "I don't see a shown option at that time. Which numbered option do you mean?"
+    if preference == "earliest":
+        ranked = sorted(options, key=lambda item: (_aware(item.start_time), item.index))
+        return ranked[0], None
+    if preference == "latest":
+        ranked = sorted(options, key=lambda item: (_aware(item.start_time), -item.index), reverse=True)
+        return ranked[0], None
+    if preference == "shortest_wait":
+        eta = _context_eta(context)
+        ranked = sorted(
+            options,
+            key=lambda item: (_wait_seconds(eta, item.start_time), _aware(item.start_time), item.index),
+        )
+        return ranked[0], None
+    if preference == "that_one":
+        if len(options) == 1:
+            return options[0], None
+        return None, "Which numbered option do you mean?"
+    return None, None
+
+
+def _option_matches_clock(option: PresentedOption, hhmm: str, timezone_name: str | None) -> bool:
+    parsed = parse_hhmm(hhmm)
+    if parsed is None or option.start_time is None:
+        return False
+    hour, minute = parsed
+    local = _aware(option.start_time).astimezone(resolve_zone(timezone_name))
+    return local.hour == hour and local.minute == minute
+
+
+def _context_eta(context: ConversationContext) -> datetime | None:
+    raw = context.latest_eta
+    if isinstance(raw, datetime):
+        return _aware(raw)
+    if isinstance(raw, str):
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return _aware(parsed)
+    return None
+
+
+def _wait_seconds(eta: datetime | None, start: datetime | None) -> int:
+    if start is None:
+        return 10**12
+    start_aware = _aware(start)
+    if eta is None:
+        return int(start_aware.timestamp())
+    wait = (start_aware - eta).total_seconds()
+    return int(wait if wait > 0 else 0)
+
+
+def _aware(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 def _merge_snapshot(context: ConversationContext, snapshot: dict[str, Any]) -> None:
     shipment_id = parse_uuid(snapshot.get("shipment_id"))
     if shipment_id is not None:
@@ -109,6 +194,11 @@ def _merge_snapshot(context: ConversationContext, snapshot: dict[str, Any]) -> N
     proposal_slot_id = parse_uuid(snapshot.get("proposal_slot_id"))
     if proposal_slot_id is not None:
         context.proposal_slot_id = proposal_slot_id
+    if snapshot.get("pending_proposal_count") is not None:
+        try:
+            context.pending_proposal_count = int(snapshot["pending_proposal_count"])
+        except (TypeError, ValueError):
+            pass
     if snapshot.get("selected_option_index") is not None:
         context.selected_option_index = snapshot["selected_option_index"]
     if snapshot.get("pending_clarification") is not None:
@@ -127,6 +217,20 @@ def _merge_snapshot(context: ConversationContext, snapshot: dict[str, Any]) -> N
         context.earliest_start_local = snapshot["earliest_start_local"]
     if snapshot.get("leave_by_local"):
         context.leave_by_local = snapshot["leave_by_local"]
+    if snapshot.get("repair_duration_minutes") is not None:
+        context.repair_duration_minutes = snapshot["repair_duration_minutes"]
+    if snapshot.get("reported_delay_minutes") is not None:
+        context.reported_delay_minutes = snapshot["reported_delay_minutes"]
+    if snapshot.get("explicit_eta_local"):
+        context.explicit_eta_local = snapshot["explicit_eta_local"]
+    if snapshot.get("eta_authority"):
+        context.eta_authority = snapshot["eta_authority"]
+    if snapshot.get("exception_type"):
+        context.exception_type = snapshot["exception_type"]
+    if snapshot.get("original_appointment_feasible") is not None:
+        context.original_appointment_feasible = snapshot["original_appointment_feasible"]
+    if snapshot.get("last_clarification_key"):
+        context.last_clarification_key = snapshot["last_clarification_key"]
     if snapshot.get("requires_human"):
         context.requires_human = True
         context.escalation_reason = snapshot.get("escalation_reason")

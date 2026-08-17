@@ -131,7 +131,7 @@ RULE_DEFINITIONS: tuple[RuleDefinition, ...] = (
     ),
     RuleDefinition(
         "ETA-001",
-        "ETA within slot window",
+        "ETA not after slot end",
         RuleCategory.ETA,
         RuleSeverity.BLOCKING,
         240,
