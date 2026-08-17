@@ -12,13 +12,32 @@ const LINKS = [
 ];
 
 export function AppShell() {
-  const { healthOk, healthError, facility, driver, shipment, shipments, selectShipment } = useOps();
+  const {
+    healthOk,
+    healthError,
+    facility,
+    driver,
+    shipment,
+    shipments,
+    selectShipment,
+    connecting,
+    connectionError,
+    retryBootstrap,
+  } = useOps();
   const [open, setOpen] = useState(false);
   const orderedShipments = [...shipments].sort((left, right) => {
     const leftDemo = left.shipment_number.startsWith("SHP-DEMO") ? 0 : 1;
     const rightDemo = right.shipment_number.startsWith("SHP-DEMO") ? 0 : 1;
     return leftDemo - rightDemo || left.shipment_number.localeCompare(right.shipment_number);
   });
+  const statusLabel = connecting
+    ? "Connecting to SetuHaul API..."
+    : connectionError
+      ? "SetuHaul API temporarily unavailable"
+      : healthOk
+        ? "SetuHaul API online"
+        : (healthError ?? (healthOk === false ? "API offline" : "Checking API"));
+  const statusDot = connecting ? "wait" : connectionError ? "off" : healthOk ? "ok" : "off";
 
   return (
     <div className="app-shell">
@@ -64,15 +83,24 @@ export function AppShell() {
                 ))}
               </select>
             ) : (
-              <strong>{shipment?.shipment_number ?? "—"}</strong>
+              <strong>
+                {connecting
+                  ? "Connecting…"
+                  : connectionError
+                    ? "Unavailable"
+                    : (shipment?.shipment_number ?? "—")}
+              </strong>
             )}
           </div>
         </div>
-        <div className="topbar-status" aria-live="polite" title={healthError ?? undefined}>
-          <span className={`dot ${healthOk ? "ok" : "off"}`} />
-          <span className="topbar-status-label">
-            {healthOk ? "SetuHaul API online" : healthError ?? (healthOk === false ? "API offline" : "Checking API")}
-          </span>
+        <div className="topbar-status" aria-live="polite" title={healthError ?? undefined} data-testid="api-connection-status">
+          <span className={`dot ${statusDot}`} />
+          <span className="topbar-status-label">{statusLabel}</span>
+          {connectionError && !connecting ? (
+            <button type="button" className="btn secondary" onClick={() => void retryBootstrap()}>
+              Retry
+            </button>
+          ) : null}
         </div>
       </header>
       <aside className={`sidebar${open ? " open" : ""}`}>

@@ -55,6 +55,7 @@ from scripts.seed_ops_demo import (
     SLOT_A_START,
     SLOT_B_END,
     SLOT_B_START,
+    SPC_SHIPMENT_NUMBER,
     _appointment,
     _driver,
     _ensure_eta,
@@ -63,6 +64,7 @@ from scripts.seed_ops_demo import (
     _sync_slot_fill,
     _vehicle,
     assert_live_demo_target,
+    reset_demo_spc_fixture,
     seed_ops_demo,
 )
 from scripts.seed_phase4_live_fixtures import (
@@ -85,6 +87,7 @@ _E2E_RESET = "E2E:reset-on-reseed"
 # Dallas hero (scripts/e2e_hero_flow.py)
 HERO_SHIPMENT_NUMBER = "SH-1024"
 HERO_DRIVER_EXTERNAL_ID = "demo-driver-rivera"
+SPC_DEMO_SHIPMENT = SPC_SHIPMENT_NUMBER
 
 # Phase 4 Playwright fixtures
 PHASE4_BOOK = "SHP-PHASE4-BOOK-001"
@@ -446,6 +449,7 @@ def seed_e2e_fixtures(session: Session) -> dict[str, Any]:
     session.flush()
     result = {
         "hero": reset_hero_sh1024(session),
+        "spc": reset_demo_spc_fixture(session),
         "phase4": reset_phase4_fixtures(session),
         "stale": ensure_stale_proposal_pair(session),
         "demo_race": reset_demo_race_shipment(session),
@@ -461,6 +465,11 @@ def print_report(result: dict[str, Any]) -> None:
     print("=" * 50)
     hero = result["hero"]
     print(f"HERO  {hero['shipment_number']}  driver={hero['driver_external_id']}  facility={hero['facility_code']}")
+    spc = result["spc"]
+    print(
+        f"SPC   {spc['shipment_number']}  driver={spc['driver_external_id']}  "
+        f"facility={spc['facility_code']}"
+    )
     phase4 = result["phase4"]
     print(f"PHASE4  book={phase4['book']}  race={phase4['race']}  reschedule={phase4['reschedule']}")
     stale = result["stale"]
@@ -471,7 +480,8 @@ def print_report(result: dict[str, Any]) -> None:
     race = result["demo_race"]
     print(f"DEMO RACE  {race['shipment_number']}  proposal={race['proposal_id']}")
     print()
-    print("Re-run safe. No DROP DATABASE. Only E2E-tagged rows reset.")
+    print("Re-run safe. No DROP DATABASE. Only E2E-tagged rows and the dedicated SPC demo fixture reset.")
+    print("Unrelated operational history is preserved.")
     print("=" * 50)
 
 

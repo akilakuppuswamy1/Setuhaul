@@ -37,8 +37,8 @@ async function shipmentByNumber(number: string) {
 
 async function bindShipment(page: Page, shipmentNumber: string) {
   await page.goto("/");
-  await expect(page.getByLabel("Bound shipment")).toBeVisible({ timeout: 30_000 });
-  const select = page.getByLabel("Bound shipment");
+  await expect(page.getByLabel("Select shipment")).toBeVisible({ timeout: 30_000 });
+  const select = page.getByLabel("Select shipment");
   const value = await select.evaluate((el, number) => {
     const node = el as HTMLSelectElement;
     const option = [...node.options].find((item) => item.textContent?.trim() === number);
@@ -46,8 +46,8 @@ async function bindShipment(page: Page, shipmentNumber: string) {
   }, shipmentNumber);
   expect(value, `missing shipment ${shipmentNumber}`).not.toBe("");
   await select.selectOption(value);
-  await expect(page.getByLabel("Bound shipment")).toHaveValue(value);
-  await expect(page.locator(".shipment-bind")).toContainText(shipmentNumber);
+  await expect(page.getByLabel("Select shipment")).toHaveValue(value);
+  await expect(page.getByTestId("shipment-context-card").locator(".shipment-id")).toContainText(shipmentNumber);
   await expect(page.locator("#driver-message")).toBeEnabled({ timeout: 45_000 });
 }
 
@@ -150,7 +150,7 @@ for (const viewport of VIEWPORTS) {
   test(`viewport ${viewport.name} has no overflow and keeps composer reachable`, async ({ page }) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.goto("/");
-    await expect(page.getByLabel("Bound shipment")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByLabel("Select shipment")).toBeVisible({ timeout: 30_000 });
     if (viewport.width <= 760) {
       await page.getByRole("button", { name: "Open menu" }).click();
       await expect(page.getByRole("link", { name: "Appointments" })).toBeVisible();

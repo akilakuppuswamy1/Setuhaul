@@ -803,6 +803,7 @@ Creates (or reuses) the classroom dataset on **DATABASE_URL only** (database `se
 Includes:
 
 - Dallas walkthrough: shipment **SH-1024**, Jane Rivera, original **6:30 PM** appointment (requested), later open slots.
+- Repeatable SHOW → PROPOSE → CONFIRM fixture: **SHP-DEMO-SPC-001**, driver **DRV-027** (Arjun Singh), facility **FAC-JPR-01** (Jaipur DC, origin Neemrana). Original 6:30 PM IST requested; later 8:30 PM IST windows open and unconsumed. Re-running the seed restores **only** this dedicated fixture (plus tagged E2E rows if you use `seed_e2e_fixtures.py`).
 - Chicago Cross-Dock scarce evening capacity: **SHP-DEMO-001–005** (Alex / Priya / Ravi / Maya / Daniel) competing for **3** compatible 8:00 PM windows.
 - Reschedule fixture **SHP-DEMO-RESCHEDULE** (confirmed 6:30 PM, open 8:30 PM — seed does not pre-confirm the later slot).
 - Concurrency fixture **SHP-DEMO-RACE** (capacity-1 proposal; does not consume capacity; no winner/loser rows).
@@ -835,21 +836,29 @@ If 8010 is taken, pick a free port and set both uvicorn `--port` and `VITE_API_B
 
 ## 19. Demo Reset
 
-The E2E script **confirms SH-1024**. Re-running `seed_ops_demo.py` does **not** undo that confirmation (unique codes skip insert).
+`seed_ops_demo.py` is idempotent for unique codes: it does **not** undo a live confirmation of **SH-1024**.
 
-For a clean live confirmation demonstration:
+For the dedicated SHOW → PROPOSE → CONFIRM demo, use the **demo-fixture-only** reset (safe locally / test; does not truncate production tables and does not cancel unrelated appointment history):
+
+```bash
+python scripts/seed_e2e_fixtures.py
+```
+
+That command re-seeds classroom rows if needed, then restores:
+
+- **SHP-DEMO-SPC-001** / **DRV-027** / **FAC-JPR-01** to a fresh requested original + open 8:30 PM options
+- tagged E2E/hero/Phase 4/stale-pair fixtures used by Playwright
+
+There is **no** frontend reset button. Do not hide reset behind the UI. Do not `TRUNCATE` or `docker compose down -v` as the default procedure.
+
+A full volume wipe is a last-resort local choice only, not an automatic production reset:
 
 ```bash
 docker compose down -v
 docker compose up -d
 alembic upgrade head
 python scripts/seed_ops_demo.py
-uvicorn app.main:app --reload --port 8010 --host 127.0.0.1
 ```
-
-Then start the frontend and run the walkthrough **before** `scripts/e2e_hero_flow.py` if you still need a manual confirm.
-
-Do not hand-edit appointment rows in PostgreSQL as a reset procedure.
 
 ---
 

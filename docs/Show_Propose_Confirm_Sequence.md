@@ -65,6 +65,19 @@ flowchart LR
 
 A Step 9 ranking (`evaluate_facility_schedule`) is a snapshot. It is not a show-hold, not a proposal, and not a confirmation.
 
+## Allocation policy (first-successful-confirm / FCFS-style)
+
+The current assignment does **not** reserve a slot at SHOW or PROPOSE. Capacity is taken only by the first confirmation transaction that passes revalidation and PostgreSQL locking.
+
+| Step | Capacity effect | Guarantee |
+|---|---|---|
+| Feasibility / SHOW | None | Options are a snapshot |
+| PROPOSE | None (`requested` + `STEP7_PROPOSAL`) | The slot is not held |
+| CONFIRM | Revalidate + row locks + allocate | First successful confirm wins |
+| Competing stale proposal | HTTP 409 / `stale` | No silent retry |
+
+There is no carrier ranking, perishable priority, commercial penalty, or fairness queue unless a later assignment explicitly adds one. Step 9 ranking is read-only and does not change this confirm policy. Evidence: `tests/test_fcfs_policy.py`, `tests/test_step6_concurrency.py`, `tests/test_step7_concurrency.py`.
+
 ## Participants
 
 Two clients share `ProposalService`. Neither path lets the LLM write SQL or skip revalidation.

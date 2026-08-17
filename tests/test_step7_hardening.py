@@ -300,8 +300,8 @@ class TestStaleScenarios:
             DriverException(
                 shipment_id=data["shipment"].id,
                 driver_id=data["shipment"].driver_id,
-                exception_type=ExceptionType.BREAKDOWN,
-                description="Blocking breakdown",
+                exception_type=ExceptionType.OTHER,
+                description="Blocking safety exception",
                 status=ExceptionStatus.OPEN,
                 occurred_at=data["now"],
             )

@@ -54,7 +54,7 @@ export function loadingCopy(message: string): string {
   if (/\b(has|have|is).{0,40}confirmed\b/.test(text) || text.includes("appointment status")) {
     return "Checking status (read-only)…";
   }
-  if (text.includes("confirm it") || text.includes("book it") || text.includes("lock it in")) {
+    if (text.includes("confirm it") || text.includes("book it") || text.includes("lock it in") || /^\s*confirm[.!]?\s*$/i.test(text)) {
     return "Revalidating…";
   }
   if (text.includes("option") && (text.includes("works") || /\b(first|second|third|\d+)\b/.test(text))) {

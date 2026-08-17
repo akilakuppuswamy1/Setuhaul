@@ -63,3 +63,34 @@ Files from a later semantic/paraphrase run (reported 557 passed / 0 failed) are 
 - `tests/test_step8_paraphrase_matrix.py`
 
 They are **not REQUIRED** to reopen Phase 1/2. They are **not** a submission blocker. The user decides whether to include them in the commit. Do not revert or expand them in Phase 5.
+
+## 6. Allocation policy (first-successful-confirm / FCFS-style)
+
+Feasibility does not reserve a slot. SHOW does not consume capacity. PROPOSE does not guarantee the slot. CONFIRM revalidates availability. PostgreSQL locking protects capacity. The first successful confirmation transaction wins. A stale competing proposal receives HTTP 409 / `stale`. There is no priority, carrier ranking, perishable scoring, or commercial-penalty algorithm in the current assignment.
+
+Documented in `docs/Show_Propose_Confirm_Sequence.md` and `docs/Concurrency_locking_sequence.md`. Tests: `tests/test_fcfs_policy.py`.
+
+## 7. Dataset limitation
+
+Current implementation uses a deterministic classroom/demo dataset. The production-scale Indian network described in the assignment is represented as a future scale/data expansion rather than a full production dataset.
+
+The classroom set includes Dallas, Chicago, and Indianapolis examples, plus one small representative Indian demo fixture: Neemrana → Jaipur DC (`FAC-JPR-01`), driver `DRV-027`, shipment `SHP-DEMO-SPC-001`. That fixture is not a national network.
+
+## 8. Missing stress stories (future / assignment limitations)
+
+Not implemented as production features. Current policy for any of these is still first-successful-confirm:
+
+1. Facility capacity drops after SHOW — covered by `tests/test_fcfs_policy.py` (SHOW then rival allocate then confirm → stale/409).
+2. Warehouse reply conflicts with facility schedule — no warehouse-reply engine; catalog operational messages only.
+3. Later high-priority load arrives — no `priority` field; a later shipment that confirms first wins (`test_later_shipment_does_not_outrank_first_successful_confirm`).
+4. 10+ drivers compete for 3–4 evening slots — not a live production stress harness; classroom Chicago seed uses 5 drivers / 3 compatible windows. Concurrent 200/409 evidence remains `tests/test_step6_concurrency.py` and `tests/test_step7_concurrency.py`.
+
+## 9. Schema and scheduling grain
+
+The current assignment model does not fully model `priority`, `product_class`, `expected_unload_minutes`, vehicle length, or dock identity as separately scheduled resources. Do not treat those absences as missing columns to add for this classroom build.
+
+Appointment slots currently represent facility-level windows rather than individual dock-level resources.
+
+## 10. Contacts / messages
+
+Contacts and operational messages are catalog-only (seeded facility desk + example sent row). There is no messaging platform.

@@ -52,6 +52,11 @@ import {
   pickPendingProposalAppointment,
   pickStaleProposalAppointment,
 } from "@/lib/appointments";
+import {
+  BOOTSTRAP_TIMEOUT_MS,
+  isRetryableBootstrapError,
+  retryBootstrap,
+} from "@/lib/bootstrapRetry";
 import { isConversationThreadMissing, sendDriverMessage } from "@/lib/conversationThread";
 import { loadingCopy } from "@/lib/format";
 
@@ -97,6 +102,8 @@ interface OpsState {
   loading: boolean;
   loadingLabel: string | null;
   error: string | null;
+  connecting: boolean;
+  connectionError: boolean;
   confirming: boolean;
   conversationReady: boolean;
 }
@@ -115,6 +122,7 @@ interface OpsContextValue extends OpsState {
   confirmProposal: () => Promise<void>;
   rejectCurrentProposal: () => Promise<void>;
   findNewOptions: () => void;
+  retryBootstrap: () => Promise<void>;
 }
 
 const OpsContext = createContext<OpsContextValue | null>(null);
@@ -160,10 +168,13 @@ export function OpsProvider({ children }: { children: ReactNode }) {
     loading: false,
     loadingLabel: null,
     error: null,
+    connecting: true,
+    connectionError: false,
     confirming: false,
     conversationReady: false,
   });
   const boundShipmentId = useRef<string | null>(null);
+  const bootstrapGeneration = useRef(0);
 
   const timezone = state.facility?.timezone;
 
@@ -238,7 +249,7 @@ export function OpsProvider({ children }: { children: ReactNode }) {
     }
   }, [state.shipment?.id]);
 
-  const loadShipment = useCallback(async (shipmentId: string) => {
+  const loadShipment = useCallback(async (shipmentId: string, generation?: number) => {
     boundShipmentId.current = shipmentId;
     const [shipment, latest, etas, exceptions, appointments] = await Promise.all([
       getShipment(shipmentId),
@@ -274,67 +285,108 @@ export function OpsProvider({ children }: { children: ReactNode }) {
         conflict ??
         new ApiError(409, "This option is no longer available. The previously proposed slot was taken.", "stale");
     }
+    const currentConfirmed = pickCurrentAppointment(appointments.items);
+    if (generation !== undefined && bootstrapGeneration.current !== generation) return;
     if (boundShipmentId.current !== shipmentId) return;
-    setState((prev) => ({
-      ...prev,
-      shipment,
-      driver,
-      facility,
-      latestEta: latest.latest_eta,
-      etaHistory: etas.items,
-      exceptions: exceptions.items,
-      appointments: appointments.items,
-      docks,
-      proposal: proposal ?? (prev.shipment?.id === shipment.id ? prev.proposal : null),
-      conflict: conflict ?? (prev.shipment?.id === shipment.id ? prev.conflict : null),
-      loading: false,
-      loadingLabel: null,
-    }));
+    setState((prev) => {
+      let nextProposal = proposal;
+      if (!nextProposal && prev.shipment?.id === shipment.id) {
+        if (currentConfirmed && prev.proposal?.status === "proposed") {
+          nextProposal = null;
+        } else {
+          nextProposal = prev.proposal;
+        }
+      }
+      return {
+        ...prev,
+        shipment,
+        driver,
+        facility,
+        latestEta: latest.latest_eta,
+        etaHistory: etas.items,
+        exceptions: exceptions.items,
+        appointments: appointments.items,
+        docks,
+        proposal: nextProposal,
+        conflict: conflict ?? (prev.shipment?.id === shipment.id ? prev.conflict : null),
+        loading: false,
+        loadingLabel: null,
+      };
+    });
   }, []);
 
   const bootstrap = useCallback(async () => {
+    const generation = ++bootstrapGeneration.current;
+    const isCurrent = () => bootstrapGeneration.current === generation;
+    setState((prev) => ({
+      ...prev,
+      connecting: true,
+      connectionError: false,
+      healthError: null,
+      error: prev.connectionError ? null : prev.error,
+    }));
     try {
-      const health = await getHealth();
-      const ok = health.status === "ok" && health.service === "setuhaul";
+      await retryBootstrap(
+        async () => {
+          if (!isCurrent()) {
+            throw new ApiError(0, "Bootstrap superseded.", "superseded");
+          }
+          const health = await getHealth({ timeoutMs: BOOTSTRAP_TIMEOUT_MS });
+          const ok = health.status === "ok" && health.service === "setuhaul";
+          if (!ok) {
+            throw new ApiError(
+              0,
+              "Connected host is not the SetuHaul API. Set VITE_API_BASE_URL to the uvicorn process running app.main:app.",
+              "wrong_host",
+            );
+          }
+          if (!isCurrent()) {
+            throw new ApiError(0, "Bootstrap superseded.", "superseded");
+          }
+          const listed = await listShipments({}, { timeoutMs: BOOTSTRAP_TIMEOUT_MS });
+          if (!isCurrent()) {
+            throw new ApiError(0, "Bootstrap superseded.", "superseded");
+          }
+          setState((prev) => ({
+            ...prev,
+            healthOk: true,
+            healthError: null,
+            shipments: listed.items,
+          }));
+          const preferred =
+            listed.items.find((item) => item.shipment_number === "SHP-DEMO-001") ??
+            listed.items.find((item) => item.shipment_number === "SHP-CHI-5437") ??
+            listed.items.find((item) => item.shipment_number === "SH-1024") ??
+            listed.items.find((item) => item.driver_id && item.is_active) ??
+            listed.items[0];
+          const targetId = boundShipmentId.current ?? preferred?.id;
+          if (!targetId) {
+            throw new ApiError(404, "No shipments found. Seed the demo dataset, then refresh.", "empty_shipments");
+          }
+          await loadShipment(targetId, generation);
+        },
+        { isCurrent },
+      );
+      if (!isCurrent()) return;
       setState((prev) => ({
         ...prev,
-        healthOk: ok,
-        healthError: ok
-          ? null
-          : "Connected host is not the SetuHaul API. Set VITE_API_BASE_URL to the uvicorn process running app.main:app.",
+        connecting: false,
+        connectionError: false,
+        healthOk: true,
+        healthError: null,
+        error: prev.error && /timed out|unreachable|temporarily unavailable/i.test(prev.error) ? null : prev.error,
       }));
-      if (!ok) return;
     } catch (error) {
+      if (!isCurrent()) return;
+      const retryable = isRetryableBootstrapError(error);
+      const message = error instanceof ApiError ? error.message : "Unable to reach the SetuHaul API.";
       setState((prev) => ({
         ...prev,
-        healthOk: false,
-        healthError: error instanceof ApiError ? error.message : "API unreachable",
-      }));
-      return;
-    }
-    try {
-      const listed = await listShipments();
-      setState((prev) => ({ ...prev, shipments: listed.items }));
-      if (boundShipmentId.current) return;
-      const preferred =
-        listed.items.find((item) => item.shipment_number === "SHP-DEMO-001") ??
-        listed.items.find((item) => item.shipment_number === "SHP-CHI-5437") ??
-        listed.items.find((item) => item.shipment_number === "SH-1024") ??
-        listed.items.find((item) => item.driver_id && item.is_active) ??
-        listed.items[0];
-      if (!preferred) {
-        setState((prev) => ({
-          ...prev,
-          error: "No shipments found. Seed the demo dataset, then refresh.",
-        }));
-        return;
-      }
-      if (boundShipmentId.current) return;
-      await loadShipment(preferred.id);
-    } catch (error) {
-      setState((prev) => ({
-        ...prev,
-        error: error instanceof ApiError ? error.message : "Unable to load shipments.",
+        connecting: false,
+        connectionError: retryable,
+        healthOk: retryable ? prev.healthOk : false,
+        healthError: message,
+        error: retryable ? prev.error : message,
       }));
     }
   }, [loadShipment]);
@@ -497,7 +549,9 @@ export function OpsProvider({ children }: { children: ReactNode }) {
     async (text?: string) => {
       const message = (text ?? state.composer).trim();
       if (!message || !state.driver || !state.shipment) return;
-      const kind = /confirm it|book it|lock it in/i.test(message) ? "confirm" : "message";
+      const kind = /\bconfirm\b|\bbook it\b|\block it in\b/i.test(message) && !/\b(has|have|is).{0,40}confirmed\b/i.test(message)
+        ? "confirm"
+        : "message";
       setState((prev) => ({
         ...prev,
         loading: true,
@@ -659,6 +713,7 @@ export function OpsProvider({ children }: { children: ReactNode }) {
     selectOption,
     confirmProposal,
     rejectCurrentProposal,
+    retryBootstrap: bootstrap,
     findNewOptions: () => {
       setState((prev) => ({ ...prev, conflict: null }));
       void send("What options do I have?");

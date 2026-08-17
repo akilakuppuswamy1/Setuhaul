@@ -343,6 +343,7 @@ class TestStatusAndConfirmation:
     def test_explicit_confirm_phrases(self) -> None:
         for message in (
             "Confirm it.",
+            "Confirm",
             "Yes, confirm the 8:30 slot.",
             "Book the second option.",
             "Go ahead and confirm that proposal.",
@@ -350,6 +351,25 @@ class TestStatusAndConfirmation:
             parsed = parse_understanding(message)
             assert parsed.intent == ConversationIntent.ACCEPT_PROPOSAL, message
             assert parsed.confirm is True, message
+
+
+    def test_confirm_turn_does_not_repeat_proposal_prompt(self) -> None:
+        text = format_turn(
+            results=[
+                ToolResult(
+                    name="create_proposal",
+                    success=True,
+                    data={"status": "proposed", "proposal_id": str(uuid4())},
+                ),
+                ToolResult(
+                    name="accept_proposal",
+                    success=True,
+                    data={"status": "confirmed", "proposal_id": str(uuid4())},
+                ),
+            ]
+        )
+        assert text == "The appointment is confirmed."
+        assert "Say confirm if you want me to book it." not in text
 
     def test_appointment_time_is_read_only(self, db_session: Session) -> None:
         world = _build_reschedule_world(db_session)

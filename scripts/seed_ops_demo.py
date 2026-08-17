@@ -29,6 +29,7 @@ from app.models import (
     Appointment,
     AppointmentSlot,
     Carrier,
+    ChatThread,
     Contact,
     Dock,
     Driver,
@@ -44,6 +45,7 @@ from app.models import (
 from app.models.enums import (
     AppointmentSlotStatus,
     AppointmentStatus,
+    ChatThreadStatus,
     CheckinType,
     ContactType,
     DockStatus,
@@ -58,6 +60,7 @@ from app.models.enums import (
 from app.services.proposal import PROPOSAL_MARKER
 
 TZ = ZoneInfo("America/Chicago")
+IST = ZoneInfo("Asia/Kolkata")
 DEMO_DAY = datetime(2026, 8, 13, tzinfo=TZ)
 ORIGINAL_START = DEMO_DAY.replace(hour=18, minute=30)  # 6:30 PM
 ORIGINAL_END = DEMO_DAY.replace(hour=19, minute=0)
@@ -81,12 +84,37 @@ ETA_COMPETE = DEMO_DAY.replace(hour=20, minute=0)
 ETA_RESCHEDULE = DEMO_DAY.replace(hour=20, minute=30)
 ETA_NOCAP = DEMO_DAY.replace(hour=21, minute=15)
 ETA_ARRIVED = DEMO_DAY.replace(hour=16, minute=0)
+JPR_DAY = datetime(2026, 8, 13, tzinfo=IST)
+JPR_ORIGINAL_START = JPR_DAY.replace(hour=18, minute=30)
+JPR_ORIGINAL_END = JPR_DAY.replace(hour=19, minute=0)
+JPR_SLOT_A_START = JPR_DAY.replace(hour=20, minute=30)
+JPR_SLOT_A_END = JPR_DAY.replace(hour=21, minute=0)
+JPR_SLOT_B_START = JPR_DAY.replace(hour=20, minute=30)
+JPR_SLOT_B_END = JPR_DAY.replace(hour=21, minute=30)
+
+SPC_SHIPMENT_NUMBER = "SHP-DEMO-SPC-001"
+SPC_DRIVER_EXTERNAL_ID = "DRV-027"
+SPC_FACILITY_CODE = "FAC-JPR-01"
+SPC_ORIGINAL_TAG = "DEMO:SPC original 6:30 PM appointment"
+SPC_ORIGINAL_ETA_REASON = "DEMO:SPC original scheduled arrival"
 
 
 def as_chicago(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=TZ)
     return value.astimezone(TZ)
+
+
+def as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _spc_store_utc(session: Session) -> bool:
+    """SQLite strips timezone; persist UTC instants so naive=UTC feasibility still matches IST clocks."""
+    bind = session.get_bind()
+    return bind is not None and bind.dialect.name == "sqlite"
 
 FORBIDDEN_DATABASE_NAMES = frozenset({"postgres", "template0", "template1", "setuhaul_test"})
 _CAPACITY_STATUSES = tuple(
@@ -231,6 +259,7 @@ def _facility(
         facility.name = name
         facility.address = address
         facility.status = EntityStatus.ACTIVE
+        facility.timezone = timezone_name
     return facility
 
 
@@ -299,19 +328,27 @@ def _slot_at(
     start: datetime,
     end: datetime,
     capacity: int,
+    *,
+    store_utc: bool = False,
 ) -> AppointmentSlot:
-    start_local = as_chicago(start)
-    end_local = as_chicago(end)
+    start_key = as_utc(start) if store_utc else as_chicago(start)
+    end_key = as_utc(end) if store_utc else as_chicago(end)
+    persist_start = as_utc(start) if store_utc else start
+    persist_end = as_utc(end) if store_utc else end
     for existing in session.query(AppointmentSlot).filter_by(facility_id=facility_id).all():
-        if as_chicago(existing.start_time) == start_local and as_chicago(existing.end_time) == end_local:
+        existing_start = as_utc(existing.start_time) if store_utc else as_chicago(existing.start_time)
+        existing_end = as_utc(existing.end_time) if store_utc else as_chicago(existing.end_time)
+        if existing_start == start_key and existing_end == end_key:
             existing.capacity = capacity
+            existing.start_time = persist_start
+            existing.end_time = persist_end
             if existing.status == AppointmentSlotStatus.CLOSED:
                 existing.status = AppointmentSlotStatus.OPEN
             return existing
     slot = AppointmentSlot(
         facility_id=facility_id,
-        start_time=start,
-        end_time=end,
+        start_time=persist_start,
+        end_time=persist_end,
         capacity=capacity,
         status=AppointmentSlotStatus.OPEN,
     )
@@ -1443,6 +1480,124 @@ def _seed_indianapolis(session: Session, carrier: Carrier) -> dict[str, Any]:
     return {"facility": indy, "docks": docks, "slots": slots, "shipments": created}
 
 
+def reset_demo_spc_fixture(session: Session) -> dict[str, Any]:
+    """Restore the dedicated SHOW → PROPOSE → CONFIRM fixture only.
+
+    Touches FAC-JPR-01 / DRV-027 / SHP-DEMO-SPC-001. Does not cancel unrelated
+    operational appointments at Dallas, Chicago, or Indianapolis.
+    """
+    carrier = _carrier(session)
+    driver = _driver(
+        session,
+        carrier,
+        external_id=SPC_DRIVER_EXTERNAL_ID,
+        name="Arjun Singh",
+        phone="+919876500027",
+    )
+    vehicle = _vehicle(session, carrier, license_plate="RJ-027-VAN")
+    facility = _facility(
+        session,
+        code=SPC_FACILITY_CODE,
+        name="Jaipur DC",
+        address="Neemrana–Jaipur inbound, Jaipur, Rajasthan",
+        timezone_name="Asia/Kolkata",
+    )
+    dock = _dock(session, facility, name="Dock 1")
+    _rule(
+        session,
+        facility,
+        rule_type="max_daily_appointments",
+        rule_value={"limit": 40},
+        effective_start=JPR_ORIGINAL_START - timedelta(days=30),
+    )
+    store_utc = _spc_store_utc(session)
+    original_slot = _slot_at(
+        session, facility.id, JPR_ORIGINAL_START, JPR_ORIGINAL_END, 1, store_utc=store_utc
+    )
+    alt_a = _slot_at(session, facility.id, JPR_SLOT_A_START, JPR_SLOT_A_END, 1, store_utc=store_utc)
+    alt_b = _slot_at(session, facility.id, JPR_SLOT_B_START, JPR_SLOT_B_END, 1, store_utc=store_utc)
+    shipment = _shipment(
+        session,
+        carrier,
+        shipment_number=SPC_SHIPMENT_NUMBER,
+        driver=driver,
+        vehicle=vehicle,
+        origin="Neemrana, Rajasthan",
+        destination="Jaipur DC",
+        facility=facility,
+        status=ShipmentStatus.IN_TRANSIT,
+        weight_kg="9800",
+        pallet_count=14,
+    )
+
+    for thread in session.query(ChatThread).filter_by(shipment_id=shipment.id).all():
+        thread.driver_exception_id = None
+        thread.status = ChatThreadStatus.CLOSED
+    for exception in session.query(DriverException).filter_by(shipment_id=shipment.id).all():
+        session.delete(exception)
+    for eta in session.query(ETAUpdate).filter_by(shipment_id=shipment.id).all():
+        if (eta.reason or "") != SPC_ORIGINAL_ETA_REASON:
+            session.delete(eta)
+    session.flush()
+
+    original_eta = as_utc(JPR_ORIGINAL_START) if store_utc else JPR_ORIGINAL_START
+    original_ts = as_utc(JPR_DAY.replace(hour=8, minute=0)) if store_utc else JPR_DAY.replace(hour=8, minute=0)
+    _ensure_eta(
+        session,
+        shipment,
+        new_eta=original_eta,
+        timestamp=original_ts,
+        source=ETASource.DISPATCH,
+        reason=SPC_ORIGINAL_ETA_REASON,
+        previous_eta=None,
+    )
+
+    for row in session.query(Appointment).filter_by(shipment_id=shipment.id).all():
+        if SPC_ORIGINAL_TAG in (row.notes or ""):
+            continue
+        row.status = AppointmentStatus.CANCELLED
+        if "DEMO:SPC-RESET" not in (row.notes or ""):
+            row.notes = (row.notes or "") + "\nDEMO:SPC-RESET"
+    for slot in (original_slot, alt_a, alt_b):
+        for row in session.query(Appointment).filter(
+            Appointment.appointment_slot_id == slot.id,
+            Appointment.status.in_(_CAPACITY_STATUSES),
+        ):
+            if SPC_ORIGINAL_TAG in (row.notes or ""):
+                continue
+            row.status = AppointmentStatus.CANCELLED
+            if "DEMO:SPC-RESET" not in (row.notes or ""):
+                row.notes = (row.notes or "") + "\nDEMO:SPC-RESET"
+        slot.capacity = 1
+        slot.status = AppointmentSlotStatus.OPEN
+
+    _appointment(
+        session,
+        shipment=shipment,
+        facility=facility,
+        slot=original_slot,
+        dock=dock,
+        status=AppointmentStatus.REQUESTED,
+        notes=SPC_ORIGINAL_TAG,
+        tag=SPC_ORIGINAL_TAG,
+    )
+    dock.status = DockStatus.AVAILABLE
+    for slot in (original_slot, alt_a, alt_b):
+        _sync_slot_fill(session, slot)
+    session.flush()
+    return {
+        "shipment_number": SPC_SHIPMENT_NUMBER,
+        "driver_external_id": SPC_DRIVER_EXTERNAL_ID,
+        "facility_code": SPC_FACILITY_CODE,
+        "shipment_id": str(shipment.id),
+        "driver_id": str(driver.id),
+        "facility_id": str(facility.id),
+        "original_slot_id": str(original_slot.id),
+        "option_slot_ids": [str(alt_a.id), str(alt_b.id)],
+        "dock_id": str(dock.id),
+    }
+
+
 def seed_ops_demo(session: Session) -> dict[str, object]:
     carrier = _carrier(session)
     dallas = _seed_dallas_hero(session, carrier)
@@ -1458,6 +1613,7 @@ def seed_ops_demo(session: Session) -> dict[str, object]:
         chicago_base["alt_b"],
     )
     _seed_indianapolis(session, carrier)
+    spc = reset_demo_spc_fixture(session)
     session.commit()
     return {
         "carrier_id": str(carrier.id),
@@ -1492,6 +1648,11 @@ def seed_ops_demo(session: Session) -> dict[str, object]:
         "race_slot_id": str(scarce["slot_2000"].id),
         "nocap_shipment_id": str(scarce["nocap_shipment"].id),
         "nocap_shipment_number": scarce["nocap_shipment"].shipment_number,
+        "spc_shipment_id": spc["shipment_id"],
+        "spc_shipment_number": spc["shipment_number"],
+        "spc_driver_external_id": spc["driver_external_id"],
+        "spc_facility_code": spc["facility_code"],
+        "spc_option_slot_ids": spc["option_slot_ids"],
     }
 
 
@@ -1559,6 +1720,13 @@ def print_demo_report(session: Session, result: dict[str, object]) -> None:
     print(f"Shipment ID: {result['nocap_shipment_id']}")
     print("Expected: human escalation after get_available_options finds no feasible slot")
     print("Condition: latest ETA 9:15 PM; every Chicago slot that contains that ETA is already confirmed full.")
+    print()
+    print("FRESH SHOW → PROPOSE → CONFIRM (dedicated demo fixture)")
+    print(f"Shipment: {result['spc_shipment_number']}")
+    print(f"Driver: {result['spc_driver_external_id']}  Facility: {result['spc_facility_code']}")
+    print("Origin: Neemrana → Jaipur DC. Original 6:30 PM IST requested. Later 8:30 PM IST windows open.")
+    print("Re-running this seed restores ONLY this fixture. Unrelated appointments are not cancelled.")
+    print("Repeatable reset (demo fixture only): python scripts/seed_e2e_fixtures.py")
     print()
     print("COUNTS")
     for key, value in counts.items():

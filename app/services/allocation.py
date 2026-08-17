@@ -66,9 +66,10 @@ class AllocationService:
         replace_active: bool = False,
         ignore_delay_exceptions: bool | None = None,
     ) -> AllocationResponse:
-        """Allocate a slot/dock. Delay/traffic exceptions are ignored when
-        ``ignore_delay_exceptions`` is true, or by default when replacing an
-        active appointment (reschedule). Direct allocate keeps them blocking.
+        """Allocate a slot/dock. Delay-class exceptions (delay, traffic, repair,
+        breakdown) are ignored when ``ignore_delay_exceptions`` is true, or by
+        default when replacing an active appointment (reschedule). Direct
+        allocate keeps them blocking. Other/safety exceptions still block.
         """
         payload = request or AllocationRequest()
         evaluated_at = payload.evaluated_at or datetime.now(timezone.utc)

@@ -28,10 +28,10 @@ class FeasibilityEvaluateRequest(BaseModel):
     ignore_delay_exceptions: bool = Field(
         default=False,
         description=(
-            "When seeking or confirming an alternative slot, delay/traffic exceptions "
-            "are the reason for reschedule and must not block EXCP-001. "
-            "Breakdown/repair/safety exceptions still block. Direct feasibility "
-            "evaluation keeps the default (false)."
+            "When seeking or confirming an alternative slot, delay-class exceptions "
+            "(delay, traffic, repair, breakdown) are the reason for reschedule and "
+            "must not block EXCP-001. Other/safety exceptions still block. Direct "
+            "feasibility evaluation keeps the default (false)."
         ),
     )
 

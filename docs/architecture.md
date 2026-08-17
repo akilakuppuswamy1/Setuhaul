@@ -209,4 +209,12 @@ Step 2 schema is frozen. Later steps reuse `Appointment` rows for proposals (`st
 
 **Not implemented by design.** Driver authentication, national routing, fleet optimisation, OR-Tools, event bus, LangChain, travel-time prediction, hours-of-service calendars, `POST /schedule/confirm`, human-task SLA workflow, notifications inbox.
 
-**Schema-bound gaps.** No shipment `priority` or `expected_unload_minutes` for scoring. Hold-with-expiry has no `expires_at` column (proposal TTL is application-side, 30 minutes). Escalation is a record, not a dispatcher. Two-commit recovery exists for proposal confirm vs allocation.
+**Schema-bound gaps.** No shipment `priority`, `product_class`, `expected_unload_minutes`, vehicle length, or dock identity as a separately scheduled resource. The current assignment model does not fully model these operational attributes. Hold-with-expiry has no `expires_at` column (proposal TTL is application-side, 30 minutes). Escalation is a record, not a dispatcher. Two-commit recovery exists for proposal confirm vs allocation.
+
+**Dataset.** Current implementation uses a deterministic classroom/demo dataset (Dallas, Chicago, Indianapolis, plus a small Jaipur representative fixture `SHP-DEMO-SPC-001` / `FAC-JPR-01` / `DRV-027`). The production-scale Indian network described in the assignment is represented as a future scale/data expansion rather than a full production dataset.
+
+**Scheduling grain.** Appointment slots currently represent facility-level windows rather than individual dock-level resources.
+
+**Contacts / operational messages.** Contacts and operational messages are catalog records (seeded desk + example email row). There is no driver/warehouse messaging platform.
+
+**Repeatable demo.** Dedicated SHOW → PROPOSE → CONFIRM fixture: shipment `SHP-DEMO-SPC-001`. Reset only that fixture with `python scripts/seed_e2e_fixtures.py` (also restores tagged E2E/hero rows). Do not truncate production tables.

@@ -101,3 +101,4 @@ def test_e2e_reset_is_idempotent(db_session: Session) -> None:
     second = seed_e2e_fixtures(db_session)
     assert first["hero"]["shipment_id"] == second["hero"]["shipment_id"]
     assert first["stale"]["slot_id"] == second["stale"]["slot_id"]
+    assert first["spc"]["shipment_id"] == second["spc"]["shipment_id"]

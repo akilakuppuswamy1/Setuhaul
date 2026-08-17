@@ -43,7 +43,13 @@ export function DriverConsolePage() {
         </div>
         <div className="messages" role="log" aria-live="polite">
           {ops.messages.length === 0 && (
-            <div className="empty">Start the hero flow from Demo Scenarios, or type a driver message.</div>
+            <div className="empty">
+              {ops.connecting
+                ? "Connecting to SetuHaul API..."
+                : ops.connectionError
+                  ? "SetuHaul API temporarily unavailable. Retry to load shipments."
+                  : "Start the hero flow from Demo Scenarios, or type a driver message."}
+            </div>
           )}
           {ops.messages.map((message) => (
             <article key={message.id} className={`bubble ${message.role}`}>

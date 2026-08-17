@@ -4,7 +4,7 @@ How SetuHaul prevents double-booking when two clients confirm the same scarce sl
 
 Rendered overview of lock order, the capacity-1 race, and Step 7 wrapping Step 6: [Concurrency_locking_sequence.png](Concurrency_locking_sequence.png).
 
-**Rule.** Showing an option and writing `Appointment` `status=requested` do not consume capacity. Only Step 6, holding locks in one transaction, may write `confirmed` / `held`. Step 7 does not invent a second lock scheme; it takes the shipment advisory lock, revalidates with Step 5, then calls Step 6.
+**Rule.** Showing an option and writing `Appointment` `status=requested` do not consume capacity. Only Step 6, holding locks in one transaction, may write `confirmed` / `held`. Step 7 does not invent a second lock scheme; it takes the shipment advisory lock, revalidates with Step 5, then calls Step 6. The allocation policy is **first-successful-confirm / FCFS-style**: the first confirmation transaction that acquires the locks and still finds capacity wins; a stale competing proposal receives HTTP 409. There is no priority ranking at confirm time.
 
 ## What is implemented
 
@@ -244,6 +244,8 @@ Expired proposals (30 minutes from `created_at`, application TTL) and rejected /
 | `test_two_proposals_same_slot_one_succeeds` | Two `requested` holds; one accept wins |
 | `test_same_proposal_accepted_concurrently` | Same proposal id: at most one booking; retry may return the same id |
 | `test_no_double_booking_under_concurrency` | Three accepts, capacity 2 → two confirmed |
+| `test_show_does_not_reserve_slot_then_confirm_loses_after_capacity_drop` | SHOW snapshot, then rival allocate, then confirm → 409 |
+| `test_later_shipment_does_not_outrank_first_successful_confirm` | No priority field; first successful confirm wins |
 
 Workers set `lock_timeout = '10s'` so a stuck lock fails the test instead of hanging.
 

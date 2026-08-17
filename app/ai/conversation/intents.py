@@ -371,6 +371,9 @@ def _asks_confirmation_status(lowered: str) -> bool:
 def _is_confirm(lowered: str) -> bool:
     if _declines_confirm(lowered) or _asks_confirmation_status(lowered):
         return False
+    compact = lowered.strip().rstrip(".!").strip()
+    if compact in {"confirm", "yes confirm", "yes, confirm"}:
+        return not _asks_status(lowered)
     return any(
         phrase in lowered
         for phrase in (

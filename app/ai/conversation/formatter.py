@@ -99,6 +99,9 @@ def format_turn(
     if escalation_message:
         return escalation_message
     results = results or []
+    accept = next((item for item in results if item.name == "accept_proposal"), None)
+    if accept is not None:
+        return _format_result(accept)
     names = {item.name for item in results}
     if names & {
         "record_eta_update",

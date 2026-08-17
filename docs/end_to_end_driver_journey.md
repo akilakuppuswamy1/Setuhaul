@@ -11,9 +11,10 @@ Rendered overview: [end_to_end_driver_journey.png](end_to_end_driver_journey.png
 | | |
 |---|---|
 | Classroom shipment | **SH-1024** (Jane Rivera → Dallas Distribution Center) |
-| Script | `scripts/e2e_hero_flow.py` |
+| Repeatable SPC demo | **SHP-DEMO-SPC-001** (DRV-027 / Arjun Singh → FAC-JPR-01 Jaipur DC, origin Neemrana) |
+| Script | `scripts/e2e_hero_flow.py` (Dallas) · Playwright `fresh SHOW PROPOSE CONFIRM on SHP-DEMO-SPC-001` |
 | UI | Driver Console + Demo Scenarios |
-| Seed | `scripts/seed_ops_demo.py` (original 6:30 PM window; later open slots) |
+| Seed | `scripts/seed_ops_demo.py` · demo-only reset `python scripts/seed_e2e_fixtures.py` |
 
 ## What is implemented
 

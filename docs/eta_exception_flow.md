@@ -190,11 +190,11 @@ flowchart LR
 | `ETA-001` | Latest ETA before `slot.start` | **feasible** (early arrival may wait; schema has no unload duration) |
 | `ETA-001` | Latest ETA in `[slot.start, slot.end]` | feasible |
 | `ETA-002` | ETA outside operating hours | Warning only. Does not block. |
-| `EXCP-001` | Any `open` or `acknowledged` exception | `not_feasible` even if ETA is inside the slot |
+| `EXCP-001` | Any `open` or `acknowledged` exception on **direct** evaluation | `not_feasible` even if ETA is inside the slot |
 | Step 9 | `has_active_exception` | Shipment unassigned; not ranked |
 | Step 9 | `missing_eta` | Shipment unassigned; not ranked |
 
-`get_available_options` only presents slots where Step 5 returns `feasible`. An open breakdown therefore yields zero numbered options until ops resolve the exception. An 8:30 PM ETA only appears against later open slots that contain that instant.
+`get_available_options`, proposal create, and confirm revalidation evaluate with `ignore_delay_exceptions=true`, so delay-class exceptions (`delay`, `traffic`, `repair`, `breakdown`) do not fail EXCP-001 on that path. Direct evaluation (flag false) still blocks them. `other` (safety / accident / cannot-continue) still blocks even with the flag. An 8:30 PM ETA only appears against later open slots that contain that instant.
 
 Hero journey still records the delay first, then leave-by on context, then show/propose/confirm. Exception is a **side branch**, not a silent booking.
 

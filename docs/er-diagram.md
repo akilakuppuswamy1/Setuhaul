@@ -175,7 +175,7 @@ Required FKs use `RESTRICT` or `CASCADE`. Optional FKs (`SET NULL`) are the `||-
 
 **Proposal reuse.** `Appointment.status = requested` is a hold that does not consume capacity. Confirm runs Step 5 again, then Step 6 under row locks, then `status = confirmed`. Rejected, expired (30 minutes from `created_at`, application TTL), and stale are terminal. There is no separate proposals table.
 
-**Schema-bound gaps.** No shipment `priority` or `expected_unload_minutes`. No `expires_at` on holds. No human-task table — escalation is a flag on the chat thread.
+**Schema-bound gaps.** The current assignment model does not fully model shipment `priority`, `product_class`, `expected_unload_minutes`, vehicle length, or dock identity as a separately booked resource. No `expires_at` on holds. No human-task table — escalation is a flag on the chat thread. Appointment slots currently represent facility-level windows rather than individual dock-level resources.
 
 ## Foreign keys and delete rules
 

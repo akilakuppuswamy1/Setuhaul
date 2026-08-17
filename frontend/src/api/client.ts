@@ -10,7 +10,7 @@ export class ApiError extends Error {
   }
 }
 
-const DEFAULT_TIMEOUT_MS = 25_000;
+export const DEFAULT_TIMEOUT_MS = 25_000;
 
 function baseUrl(): string {
   const value = import.meta.env.VITE_API_BASE_URL?.trim();
@@ -96,7 +96,10 @@ export async function apiRequest<T>(
     if (error instanceof ApiError) {
       throw error;
     }
-    if (error instanceof DOMException && error.name === "AbortError") {
+    if (
+      (error instanceof DOMException && error.name === "AbortError") ||
+      (error instanceof Error && error.name === "AbortError")
+    ) {
       throw new ApiError(408, "The request timed out.", "timeout");
     }
     throw new ApiError(0, "Unable to reach the SetuHaul API. Confirm the backend is running.", "network");

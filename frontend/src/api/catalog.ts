@@ -1,8 +1,8 @@
 import { apiRequest } from "./client";
 import type { Appointment, AppointmentSlot, Dock, Driver, Facility, HealthResponse, Paginated } from "./types";
 
-export function getHealth() {
-  return apiRequest<HealthResponse>("/health");
+export function getHealth(options: { timeoutMs?: number } = {}) {
+  return apiRequest<HealthResponse>("/health", options);
 }
 
 export function listDrivers() {

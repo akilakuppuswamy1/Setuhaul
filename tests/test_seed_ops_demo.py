@@ -65,7 +65,7 @@ def test_seed_counts_are_classroom_sized(db_session: Session) -> None:
     counts = collect_seed_counts(db_session)
     assert 15 <= counts["drivers"] <= 25
     assert 20 <= counts["shipments"] <= 40
-    assert 2 <= counts["facilities"] <= 3
+    assert 2 <= counts["facilities"] <= 4
     assert 6 <= counts["docks"] <= 12
     assert 20 <= counts["slots"] <= 40
     assert counts["confirmed"] >= 1
@@ -234,3 +234,20 @@ def test_hero_eta_is_eight_pm(db_session: Session) -> None:
     latest = max(shipment.eta_updates, key=lambda item: item.update_timestamp)
     assert _local(latest.new_eta).hour == ETA_COMPETE.hour
     assert _local(latest.new_eta).minute == ETA_COMPETE.minute
+
+
+def test_spc_demo_fixture_is_unconsumed(db_session: Session) -> None:
+    seed_ops_demo(db_session)
+    shipment = _shipment(db_session, "SHP-DEMO-SPC-001")
+    assert shipment.driver is not None
+    assert shipment.driver.external_id == "DRV-027"
+    assert shipment.destination_facility.code == "FAC-JPR-01"
+    confirmed = (
+        db_session.query(Appointment)
+        .filter(
+            Appointment.shipment_id == shipment.id,
+            Appointment.status == AppointmentStatus.CONFIRMED,
+        )
+        .count()
+    )
+    assert confirmed == 0

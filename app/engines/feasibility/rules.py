@@ -164,6 +164,14 @@ CAPACITY_CONSUMING_APPOINTMENT_STATUSES: frozenset[str] = frozenset(
 # Driver exception statuses treated as active operational blockers.
 ACTIVE_EXCEPTION_STATUSES: frozenset[str] = frozenset({"open", "acknowledged"})
 
+# Operational reasons for seeking an alternative slot. Direct feasibility still
+# applies EXCP-001 to these types. When ignore_delay_exceptions is true
+# (options / proposal / confirm-revalidation), they must not block EXCP-001.
+# ExceptionType.OTHER (safety / accident / cannot-continue) remains blocking.
+DELAY_CLASS_EXCEPTION_TYPES: frozenset[str] = frozenset(
+    {"delay", "traffic", "repair", "breakdown"}
+)
+
 # Terminal shipment statuses that cannot proceed.
 TERMINAL_SHIPMENT_STATUSES: frozenset[str] = frozenset({"cancelled", "delivered"})
 

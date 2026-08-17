@@ -351,6 +351,9 @@ a {
 .dot.off {
   background: #c45c4a;
 }
+.dot.wait {
+  background: #c9a227;
+}
 
 .console {
   display: grid;

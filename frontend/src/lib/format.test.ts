@@ -21,4 +21,8 @@ describe("loadingCopy", () => {
   it("labels a status question as read-only", () => {
     expect(loadingCopy("Has it been confirmed?")).toMatch(/read-only/i);
   });
+
+  it("labels a bare confirm as revalidation", () => {
+    expect(loadingCopy("Confirm")).toMatch(/Revalidating/i);
+  });
 });

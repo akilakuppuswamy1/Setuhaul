@@ -228,6 +228,7 @@ Tests: `tests/test_step9_scheduling.py` (read-only engine, no confirm endpoint, 
 
 **Not implemented by design.** National routing, fleet optimisation, OR-Tools, event bus, `POST /schedule/confirm`, time-calendar dock occupancy beyond Step 5 slot/dock rules, notifications inbox.
 
-**Schema-bound.** No shipment `priority` or `expected_unload_minutes`. No new scheduling tables. `FacilityCheckin` is ranking evidence, not a conversation check-in turn.
+**Schema-bound.** No shipment `priority` or `expected_unload_minutes`. The current assignment model does not fully model those operational attributes. No new scheduling tables. `FacilityCheckin` is ranking evidence, not a conversation check-in turn. Appointment slots currently represent facility-level windows rather than individual dock-level resources. Confirm-time allocation remains first-successful-confirm; Step 9 does not implement a fairness or priority booking policy.
+
 
 **Bounds.** Evaluation may call Step 5 per shipment/slot/dock combination, capped at 50 shipments and 100 slots.

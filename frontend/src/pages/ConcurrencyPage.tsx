@@ -30,8 +30,10 @@ DRIVER B ───────┘`}
           without mutating shared demo data, so this page does not invent one.
         </p>
         <p style={{ color: "var(--muted)", marginBottom: 0 }}>
+          Allocation policy is first-successful-confirm (FCFS-style): SHOW and PROPOSE do not reserve the slot.
           Runtime confirmation still uses POST /proposals/{"{id}"}/accept, which revalidates (Step 5) and allocates
-          (Step 6). A second driver receiving 409 is a backend outcome, not a frontend calculation.
+          (Step 6). Concurrent confirmation evidence is Request A → 200 and Request B → 409 from that backend path,
+          not a frontend calculation.
         </p>
       </section>
     </div>

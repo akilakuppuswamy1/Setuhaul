@@ -166,18 +166,27 @@ describe("Driver Console proposal vs confirmation", () => {
   });
 });
 
-describe("Driver Console shipment binding", () => {
-  it("exposes a bound-shipment selector for demo records", () => {
+describe("Driver Console shipment context", () => {
+  it("shows read-only shipment context without a card-level selector", () => {
     baseOps.shipments = [
       { id: "s1", shipment_number: "SHP-DEMO-001" },
       { id: "s2", shipment_number: "SHP-DEMO-NOCAP" },
     ];
     baseOps.shipment = { id: "s1", shipment_number: "SHP-DEMO-001" };
+    baseOps.driver = { id: "d1", name: "Alex Driver" };
+    baseOps.facility = { name: "Chicago Cross-Dock", timezone: "America/Chicago" };
+    baseOps.latestEta = "2026-08-14T01:30:00Z";
+    baseOps.currentAppointment = { id: "a1", status: "confirmed" };
+    baseOps.currentSlot = { start_time: "2026-08-14T01:30:00Z", end_time: "2026-08-14T02:00:00Z" };
     render(<DriverConsolePage />);
-    const selector = screen.getByLabelText("Bound shipment");
-    expect(selector).toHaveValue("s1");
-    expect(selector).toHaveTextContent("SHP-DEMO-001");
-    expect(selector).toHaveTextContent("SHP-DEMO-NOCAP");
+
+    expect(screen.queryByLabelText("Bound shipment")).toBeNull();
+    const card = screen.getByTestId("shipment-context-card");
+    expect(within(card).getByRole("heading", { level: 2, name: "SHP-DEMO-001" })).toBeTruthy();
+    expect(within(card).getByText("Alex Driver")).toBeTruthy();
+    expect(within(card).getByText("Chicago Cross-Dock")).toBeTruthy();
+    expect(within(card).getByText("Confirmed")).toBeTruthy();
+    expect(within(card).getByText("None")).toBeTruthy();
   });
 });
 

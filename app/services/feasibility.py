@@ -21,7 +21,10 @@ from app.engines.feasibility.models import (
     SlotFacts,
     VehicleFacts,
 )
-from app.engines.feasibility.rules import CAPACITY_CONSUMING_APPOINTMENT_STATUSES
+from app.engines.feasibility.rules import (
+    CAPACITY_CONSUMING_APPOINTMENT_STATUSES,
+    DELAY_CLASS_EXCEPTION_TYPES,
+)
 from app.models.appointment import Appointment
 from app.models.appointment_slot import AppointmentSlot
 from app.models.carrier import Carrier
@@ -130,7 +133,7 @@ class FeasibilityService:
             exceptions = [
                 item
                 for item in exceptions
-                if item.exception_type.value not in {"delay", "traffic"}
+                if item.exception_type.value not in DELAY_CLASS_EXCEPTION_TYPES
             ]
         facility_rules = (
             self._rule_repo.list_active_at(facility.id, evaluated_at)
