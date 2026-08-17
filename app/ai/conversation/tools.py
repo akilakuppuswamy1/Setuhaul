@@ -55,6 +55,7 @@ class ToolArguments(BaseModel):
     earliest_start_local: str | None = None
     leave_by_local: str | None = None
     eta_local: str | None = None
+    original_eta_local: str | None = None
     timezone_name: str | None = None
     eta_source: str | None = None
 

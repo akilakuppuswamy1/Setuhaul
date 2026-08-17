@@ -182,15 +182,15 @@ def _merge_snapshot(context: ConversationContext, snapshot: dict[str, Any]) -> N
         context.proposal_id = proposal_id
     if snapshot.get("latest_eta"):
         context.latest_eta = snapshot["latest_eta"]
-    if snapshot.get("presented_options"):
+    if "presented_options" in snapshot:
+        raw_options = snapshot.get("presented_options") or []
         options: list[PresentedOption] = []
-        for item in snapshot["presented_options"]:
+        for item in raw_options:
             try:
                 options.append(PresentedOption.model_validate(item))
             except (ValueError, TypeError):
                 continue
-        if options:
-            context.presented_options = options
+        context.presented_options = options
     proposal_slot_id = parse_uuid(snapshot.get("proposal_slot_id"))
     if proposal_slot_id is not None:
         context.proposal_slot_id = proposal_slot_id
@@ -199,18 +199,21 @@ def _merge_snapshot(context: ConversationContext, snapshot: dict[str, Any]) -> N
             context.pending_proposal_count = int(snapshot["pending_proposal_count"])
         except (TypeError, ValueError):
             pass
-    if snapshot.get("selected_option_index") is not None:
-        context.selected_option_index = snapshot["selected_option_index"]
-    if snapshot.get("pending_clarification") is not None:
-        context.pending_clarification = snapshot["pending_clarification"]
-    pending_intent = snapshot.get("pending_intent")
-    if pending_intent:
-        try:
-            context.pending_intent = ConversationIntent(pending_intent)
-        except ValueError:
-            pass
-    if snapshot.get("pending_delay_minutes") is not None:
-        context.pending_delay_minutes = snapshot["pending_delay_minutes"]
+    if "selected_option_index" in snapshot:
+        context.selected_option_index = snapshot.get("selected_option_index")
+    if "pending_clarification" in snapshot:
+        context.pending_clarification = snapshot.get("pending_clarification")
+    if "pending_intent" in snapshot:
+        pending_intent = snapshot.get("pending_intent")
+        if pending_intent:
+            try:
+                context.pending_intent = ConversationIntent(pending_intent)
+            except ValueError:
+                context.pending_intent = None
+        else:
+            context.pending_intent = None
+    if "pending_delay_minutes" in snapshot:
+        context.pending_delay_minutes = snapshot.get("pending_delay_minutes")
     if snapshot.get("facility_timezone"):
         context.facility_timezone = snapshot["facility_timezone"]
     if snapshot.get("earliest_start_local"):

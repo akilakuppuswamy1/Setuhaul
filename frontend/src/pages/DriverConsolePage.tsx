@@ -402,7 +402,8 @@ function labelException(value?: string | null): string {
 function EtaCard() {
   const ops = useOps();
   const latest = ops.etaHistory.at(-1);
-  const original = ops.originalSlot?.start_time ?? ops.etaHistory.find((item) => item.source === "dispatch")?.new_eta;
+  const dispatchEta = ops.etaHistory.find((item) => item.source === "dispatch")?.new_eta;
+  const originalEta = dispatchEta ?? ops.etaHistory[0]?.new_eta;
   if (!latest) {
     return (
       <section className="card card-pad">
@@ -417,12 +418,12 @@ function EtaCard() {
     <section className="card card-pad">
       <div className="kicker">ETA / exception</div>
       <dl className="kv">
-        <dt>Original appointment</dt>
-        <dd>{formatTime(original, ops.timezone)}</dd>
+        <dt>Original ETA</dt>
+        <dd>{formatTime(originalEta, ops.timezone)}</dd>
         <dt>Updated ETA</dt>
         <dd>{formatTime(latest.new_eta, ops.timezone)}</dd>
         <dt>Delay</dt>
-        <dd>{formatDelay(original, latest.new_eta) ?? "—"}</dd>
+        <dd>{formatDelay(originalEta, latest.new_eta) ?? "—"}</dd>
         <dt>Source</dt>
         <dd>{latest.source}</dd>
         <dt>Reason</dt>

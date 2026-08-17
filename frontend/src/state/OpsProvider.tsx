@@ -177,14 +177,17 @@ export function OpsProvider({ children }: { children: ReactNode }) {
         proposal = null;
       }
     }
-      const acceptFailed = (turn.tool_calls ?? []).some(
-        (call) => call.name === "accept_proposal" && call.success === false,
-      );
-      const staleTurn = turn.status === "stale" || turn.status === "conflict" || acceptFailed;
-      if (staleTurn && proposal?.status === "confirmed") {
-        proposal = null;
-      }
-      setState((prev) => ({
+    const acceptFailed = (turn.tool_calls ?? []).some(
+      (call) => call.name === "accept_proposal" && call.success === false,
+    );
+    const staleTurn = turn.status === "stale" || turn.status === "conflict" || acceptFailed;
+    if (staleTurn && proposal?.status === "confirmed") {
+      proposal = null;
+    }
+    const proposalConfirmed =
+      proposal?.status === "confirmed" ||
+      (turn.status === "ok" && turn.intent === "ACCEPT_PROPOSAL" && !acceptFailed);
+    setState((prev) => ({
       ...prev,
       messages: [
         ...prev.messages,
@@ -205,8 +208,10 @@ export function OpsProvider({ children }: { children: ReactNode }) {
           metadata: turn.metadata,
         },
       ],
-      options: options.length ? options : prev.options,
-      selectedOptionIndex: turn.metadata?.selected_option_index ?? prev.selectedOptionIndex,
+      options: proposalConfirmed ? [] : options.length ? options : prev.options,
+      selectedOptionIndex: proposalConfirmed
+        ? null
+        : (turn.metadata?.selected_option_index ?? prev.selectedOptionIndex),
       proposal: staleTurn
         ? proposal && proposal.status !== "confirmed"
           ? proposal

@@ -45,6 +45,7 @@ class ConversationAgent:
         understanding = self._provider.understand(message, _context_summary(context))
         if understanding.wants_human:
             understanding.intent = ConversationIntent.HUMAN_ESCALATION
+        understanding = _bind_bare_option_index(understanding, context)
         understanding = _resume_pending(understanding, context)
         understanding = _bind_presented_selection(understanding, context)
         return self.handle_understanding(understanding, context)
@@ -288,13 +289,15 @@ def _plan_tools(understanding: Understanding, context: ConversationContext) -> "
     if intent == ConversationIntent.PROPOSE_CHANGE:
         option = _selected_option(context)
         if option is None:
-            return _Plan(
-                clarification=(
-                    "I don't currently have a list of appointment options in this conversation. "
-                    "Would you like me to find available options?"
-                ),
-                pending="options",
-            )
+            if not context.presented_options:
+                return _Plan(
+                    clarification=(
+                        "I don't currently have a list of appointment options in this conversation. "
+                        "Would you like me to find available options?"
+                    ),
+                    pending="options",
+                )
+            return _Plan(clarification="Which numbered option should I request?")
         if (
             context.proposal_id is not None
             and context.proposal_slot_id is not None
@@ -441,6 +444,8 @@ def _plan_operational(
         if understanding.eta_local:
             arguments["eta_local"] = understanding.eta_local
             arguments["eta_source"] = "explicit"
+        if understanding.original_appointment_local:
+            arguments["original_eta_local"] = understanding.original_appointment_local
         if understanding.delay_minutes is not None and not understanding.eta_local:
             arguments["delay_minutes"] = understanding.delay_minutes
             arguments["eta_source"] = "relative"
@@ -642,6 +647,19 @@ def _maybe_escalate(
     return escalate, reason
 
 
+def _bind_bare_option_index(understanding: Understanding, context: ConversationContext) -> Understanding:
+    """Map a bare reply like '2' onto a previously presented numbered option list."""
+    if understanding.option_index is not None or not context.presented_options:
+        return understanding
+    stripped = understanding.raw_message.strip()
+    if not re.fullmatch(r"\d{1,2}", stripped):
+        return understanding
+    index = int(stripped)
+    if any(item.index == index for item in context.presented_options):
+        understanding.option_index = index
+    return understanding
+
+
 def _resume_pending(understanding: Understanding, context: ConversationContext) -> Understanding:
     lowered = understanding.raw_message.lower().strip()
     affirmative = is_informal_affirmative(understanding.raw_message)
@@ -728,7 +746,18 @@ def _bind_presented_selection(understanding: Understanding, context: Conversatio
     )
     if not has_selection:
         return understanding
-    if understanding.intent == ConversationIntent.ASK_OPTIONS and not understanding.cannot_make_appointment:
+    if understanding.intent not in {
+        ConversationIntent.ASK_STATUS,
+        ConversationIntent.ASK_APPOINTMENT,
+        ConversationIntent.ASK_FACILITY_SCHEDULE,
+        ConversationIntent.ASK_FEASIBILITY_STATUS,
+        ConversationIntent.HUMAN_ESCALATION,
+        ConversationIntent.UPDATE_ETA,
+        ConversationIntent.REPORT_DELAY,
+        ConversationIntent.REPORT_EXCEPTION,
+        ConversationIntent.REJECT_PROPOSAL,
+        ConversationIntent.CANCEL_REQUEST,
+    }:
         understanding.intent = (
             ConversationIntent.ACCEPT_PROPOSAL if understanding.confirm else ConversationIntent.PROPOSE_CHANGE
         )

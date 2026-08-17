@@ -193,6 +193,15 @@ class ToolExecutor:
         scheduled = self._scheduled_arrival(shipment_id, timezone_name=timezone_name)
         delay_baseline = scheduled or self._original_eta(shipment_id) or now
         delay = arguments.get("delay_minutes") if isinstance(arguments.get("delay_minutes"), int) else None
+        original_eta_local = (
+            arguments.get("original_eta_local") if isinstance(arguments.get("original_eta_local"), str) else None
+        )
+        if delay is not None and original_eta_local:
+            localized_original = localize_operational_clock(delay_baseline, original_eta_local, timezone_name)
+            if localized_original is None:
+                localized_original = localize_clock_on(delay_baseline, original_eta_local, timezone_name)
+            if localized_original is not None:
+                delay_baseline = localized_original
         implied_eta = _as_utc(delay_baseline) + timedelta(minutes=delay) if delay is not None else None
 
         if new_eta is None and eta_local:
@@ -204,7 +213,7 @@ class ToolExecutor:
             new_eta = localized
             eta_source = eta_source or "explicit"
         if new_eta is not None and implied_eta is not None:
-            if scheduled is not None:
+            if scheduled is not None and original_eta_local is None:
                 explicit = _as_utc(new_eta)
                 delta = abs((explicit - implied_eta).total_seconds())
                 if delta > 30 * 60:
