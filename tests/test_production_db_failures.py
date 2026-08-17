@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base, get_db
 from app.core.db_url import normalize_database_url
-from app.core.startup import should_run_startup_migrations
+from app.core.startup import apply_demo_seed_if_needed, should_run_startup_demo_seed, should_run_startup_migrations
 from app.main import app as fastapi_app
 import app.models  # noqa: F401
 
@@ -43,6 +43,108 @@ def test_startup_migrations_on_render(monkeypatch) -> None:
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.setattr("app.core.startup.settings.run_migrations_on_startup", False)
     assert should_run_startup_migrations() is True
+
+
+def test_startup_demo_seed_off_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.setattr("app.core.startup.settings.seed_demo_on_startup", False)
+    assert should_run_startup_demo_seed() is False
+
+
+def test_startup_demo_seed_on_render(monkeypatch) -> None:
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setattr("app.core.startup.settings.seed_demo_on_startup", False)
+    assert should_run_startup_demo_seed() is True
+
+
+def test_apply_demo_seed_skips_when_shipments_exist(monkeypatch) -> None:
+    from app.core import startup as startup_mod
+
+    class _Query:
+        def count(self):
+            return 3
+
+    class _Session:
+        def query(self, _model):
+            return _Query()
+
+        def close(self):
+            return None
+
+    class _Conn:
+        def execute(self, _stmt):
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class _Result:
+        def scalar(self):
+            return "setuhaul_prod"
+
+    monkeypatch.setattr(startup_mod, "should_run_startup_demo_seed", lambda: True)
+    monkeypatch.setattr(startup_mod, "_is_loopback_database_host", lambda: False)
+    monkeypatch.setattr(startup_mod, "SessionLocal", lambda: _Session())
+    monkeypatch.setattr(startup_mod.engine, "connect", lambda: _Conn())
+    called = {"seed": False}
+
+    def fake_seed(_session):
+        called["seed"] = True
+        return {}
+
+    monkeypatch.setattr("scripts.seed_ops_demo.seed_ops_demo", fake_seed)
+    startup_mod.apply_demo_seed_if_needed()
+    assert called["seed"] is False
+
+
+def test_apply_demo_seed_runs_when_empty(monkeypatch) -> None:
+    from app.core import startup as startup_mod
+
+    class _Query:
+        def count(self):
+            return 0
+
+    class _Session:
+        def query(self, _model):
+            return _Query()
+
+        def close(self):
+            return None
+
+    class _Conn:
+        def execute(self, _stmt):
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class _Result:
+        def scalar(self):
+            return "setuhaul_prod"
+
+    monkeypatch.setattr(startup_mod, "should_run_startup_demo_seed", lambda: True)
+    monkeypatch.setattr(startup_mod, "_is_loopback_database_host", lambda: False)
+    monkeypatch.setattr(startup_mod, "SessionLocal", lambda: _Session())
+    monkeypatch.setattr(startup_mod.engine, "connect", lambda: _Conn())
+    called = {"seed": False}
+
+    def fake_seed(_session):
+        called["seed"] = True
+        return {"hero_shipment_numbers": ["SHP-DEMO-001"]}
+
+    def fake_counts(_session):
+        return {"shipments": 25, "drivers": 20, "facilities": 3}
+
+    monkeypatch.setattr("scripts.seed_ops_demo.seed_ops_demo", fake_seed)
+    monkeypatch.setattr("scripts.seed_ops_demo.collect_seed_counts", fake_counts)
+    startup_mod.apply_demo_seed_if_needed()
+    assert called["seed"] is True
 
 
 def test_apply_schema_upgrades_when_domain_tables_missing(monkeypatch) -> None:

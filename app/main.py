@@ -12,7 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.router import router
 from app.core.config import settings
 from app.core.exceptions import ConflictError, NotFoundError, SetuHaulError
-from app.core.startup import apply_schema_if_needed
+from app.core.startup import apply_demo_seed_if_needed, apply_schema_if_needed
 
 logger = logging.getLogger("setuhaul")
 
@@ -20,6 +20,7 @@ logger = logging.getLogger("setuhaul")
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     apply_schema_if_needed()
+    apply_demo_seed_if_needed()
     yield
 
 
