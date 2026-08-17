@@ -4,28 +4,20 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
+from app.core.db_url import normalize_database_url
 
 
-database_url = settings.database_url
+database_url = normalize_database_url(settings.database_url)
 
-# Render may provide postgres:// or postgresql://.
-# Explicitly use psycopg v3.
-if database_url.startswith("postgres://"):
-    database_url = database_url.replace(
-        "postgres://",
-        "postgresql+psycopg://",
-        1,
-    )
-elif database_url.startswith("postgresql://"):
-    database_url = database_url.replace(
-        "postgresql://",
-        "postgresql+psycopg://",
-        1,
-    )
+_connect_args: dict[str, object] = {"connect_timeout": 10}
+if "+psycopg" in database_url.split("://", 1)[0]:
+    # Disable prepared statements so PgBouncer/Render pooler URLs work with psycopg3.
+    _connect_args["prepare_threshold"] = None
 
 engine = create_engine(
     database_url,
     pool_pre_ping=True,
+    connect_args=_connect_args,
 )
 
 SessionLocal = sessionmaker(

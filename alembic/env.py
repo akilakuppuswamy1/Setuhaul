@@ -5,6 +5,7 @@ from sqlalchemy import engine_from_config, pool
 
 from app.core.config import settings
 from app.core.database import Base
+from app.core.db_url import normalize_database_url
 import app.models  # noqa: F401 — register models with Base.metadata
 
 config = context.config
@@ -17,9 +18,8 @@ target_metadata = Base.metadata
 
 def get_url() -> str:
     override = (config.get_main_option("sqlalchemy.url") or "").strip()
-    if override:
-        return override
-    return settings.database_url
+    raw = override or settings.database_url
+    return normalize_database_url(raw)
 
 
 def run_migrations_offline() -> None:

@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://setuhaul:setuhaul@localhost:5433/setuhaul"
     test_database_url: str = "postgresql+psycopg://setuhaul:setuhaul@localhost:5433/setuhaul_test"
     app_env: str = "development"
+    run_migrations_on_startup: bool = False
 
     llm_provider: str = "fake"
     llm_api_key: str | None = None
