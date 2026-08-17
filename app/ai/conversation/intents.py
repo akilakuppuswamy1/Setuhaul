@@ -6,7 +6,7 @@ import re
 from uuid import UUID
 
 from app.ai.conversation.models import ConversationIntent, Understanding
-from app.ai.conversation.semantics import extract_semantic_facts
+from app.ai.conversation.semantics import asks_driver_reassignment, extract_semantic_facts
 
 _INJECTION_MARKERS = (
     "ignore previous",
@@ -141,6 +141,8 @@ def _classify_intent(
     _ = leave_by_local
     if wants_human:
         return ConversationIntent.HUMAN_ESCALATION, 0.9
+    if asks_driver_reassignment(lowered):
+        return ConversationIntent.REQUEST_DRIVER_REASSIGNMENT, 0.92
     if _declines_confirm(lowered) or _asks_confirmation_status(lowered) or _asks_status(lowered) or asks_status:
         return ConversationIntent.ASK_STATUS, 0.86
     if _asks_appointment_info(lowered):

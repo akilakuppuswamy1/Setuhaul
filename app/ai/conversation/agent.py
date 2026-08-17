@@ -33,6 +33,7 @@ _SHIPMENT_REQUIRED = {
     ConversationIntent.ACCEPT_PROPOSAL,
     ConversationIntent.REJECT_PROPOSAL,
     ConversationIntent.CANCEL_REQUEST,
+    ConversationIntent.REQUEST_DRIVER_REASSIGNMENT,
 }
 
 
@@ -125,10 +126,20 @@ class ConversationAgent:
             already_escalated = True
         if already_escalated or escalate:
             context.requires_human = True
-            context.escalation_reason = reason or context.escalation_reason
+            for item in results:
+                if item.name == ToolName.REQUEST_HUMAN_ESCALATION.value and item.success:
+                    tool_reason = item.data.get("reason")
+                    if isinstance(tool_reason, str) and tool_reason.strip():
+                        context.escalation_reason = tool_reason
+            context.escalation_reason = context.escalation_reason or reason
             response = driver_escalation_message(context.escalation_reason)
+            final_intent = (
+                ConversationIntent.REQUEST_DRIVER_REASSIGNMENT
+                if intent == ConversationIntent.REQUEST_DRIVER_REASSIGNMENT
+                else ConversationIntent.HUMAN_ESCALATION
+            )
             return _completed_turn(
-                ConversationIntent.HUMAN_ESCALATION,
+                final_intent,
                 understanding.confidence,
                 context,
                 results,
@@ -238,6 +249,19 @@ def _plan_tools(understanding: Understanding, context: ConversationContext) -> "
                 {
                     "name": ToolName.REQUEST_HUMAN_ESCALATION.value,
                     "arguments": {"escalation_reason": "The driver requested a human operator."},
+                }
+            ]
+        )
+    if intent == ConversationIntent.REQUEST_DRIVER_REASSIGNMENT:
+        return _Plan(
+            calls=[
+                {
+                    "name": ToolName.REQUEST_HUMAN_ESCALATION.value,
+                    "arguments": {
+                        "escalation_reason": (
+                            "Driver requested reassignment to another driver for this shipment."
+                        ),
+                    },
                 }
             ]
         )
@@ -691,6 +715,7 @@ def _resume_pending(understanding: Understanding, context: ConversationContext) 
         ConversationIntent.REPORT_EXCEPTION,
         ConversationIntent.PROPOSE_CHANGE,
         ConversationIntent.CANCEL_REQUEST,
+        ConversationIntent.REQUEST_DRIVER_REASSIGNMENT,
     }
     if understanding.intent in subject_change and understanding.intent != context.pending_intent:
         context.pending_clarification = None
@@ -726,6 +751,7 @@ def _bind_presented_selection(understanding: Understanding, context: Conversatio
         ConversationIntent.ASK_FACILITY_SCHEDULE,
         ConversationIntent.ASK_FEASIBILITY_STATUS,
         ConversationIntent.HUMAN_ESCALATION,
+        ConversationIntent.REQUEST_DRIVER_REASSIGNMENT,
         ConversationIntent.UPDATE_ETA,
         ConversationIntent.REPORT_DELAY,
         ConversationIntent.REPORT_EXCEPTION,

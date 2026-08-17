@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { appointmentStatusLabel } from "@/lib/appointments";
-import { formatDelay, formatTime, formatWindow } from "@/lib/format";
+import { deriveEtaDisplay } from "@/lib/eta";
+import { formatTime, formatWindow } from "@/lib/format";
 import { completedTimelineSteps, deriveStage, TIMELINE_STEPS } from "@/lib/timeline";
 import { useOps } from "@/state/OpsProvider";
 import type { PresentedOption } from "@/api/types";
@@ -292,35 +293,10 @@ function ShipmentCard() {
   const showHistory =
     Boolean(ops.originalAppointment) &&
     ops.originalAppointment?.id !== ops.currentAppointment?.id;
-  const orderedShipments = [...ops.shipments].sort((left, right) => {
-    const leftDemo = left.shipment_number.startsWith("SHP-DEMO") ? 0 : 1;
-    const rightDemo = right.shipment_number.startsWith("SHP-DEMO") ? 0 : 1;
-    return leftDemo - rightDemo || left.shipment_number.localeCompare(right.shipment_number);
-  });
   return (
-    <section className="card card-pad">
+    <section className="card card-pad" data-testid="shipment-context-card">
       <div className="kicker">Shipment</div>
-      {orderedShipments.length ? (
-        <label className="shipment-bind">
-          <span className="sr-only">Bound shipment</span>
-          <select
-            aria-label="Bound shipment"
-            className="shipment-select"
-            value={ops.shipment?.id ?? ""}
-            onChange={(event) => {
-              void ops.selectShipment(event.target.value);
-            }}
-          >
-            {orderedShipments.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.shipment_number}
-              </option>
-            ))}
-          </select>
-        </label>
-      ) : (
-        <h2 className="shipment-id">{ops.shipment?.shipment_number ?? "—"}</h2>
-      )}
+      <h2 className="shipment-id">{ops.shipment?.shipment_number ?? "—"}</h2>
       <dl className="kv">
         <dt>Driver</dt>
         <dd>{ops.driver?.name ?? "—"}</dd>
@@ -402,8 +378,12 @@ function labelException(value?: string | null): string {
 function EtaCard() {
   const ops = useOps();
   const latest = ops.etaHistory.at(-1);
-  const dispatchEta = ops.etaHistory.find((item) => item.source === "dispatch")?.new_eta;
-  const originalEta = dispatchEta ?? ops.etaHistory[0]?.new_eta;
+  const { originalEta, updatedEta, delayLabel } = deriveEtaDisplay(ops.etaHistory);
+  const appointmentWindow = formatWindow(
+    ops.currentSlot?.start_time ?? ops.proposalSlot?.start_time,
+    ops.currentSlot?.end_time ?? ops.proposalSlot?.end_time,
+    ops.timezone,
+  );
   if (!latest) {
     return (
       <section className="card card-pad">
@@ -421,9 +401,11 @@ function EtaCard() {
         <dt>Original ETA</dt>
         <dd>{formatTime(originalEta, ops.timezone)}</dd>
         <dt>Updated ETA</dt>
-        <dd>{formatTime(latest.new_eta, ops.timezone)}</dd>
+        <dd>{formatTime(updatedEta, ops.timezone)}</dd>
         <dt>Delay</dt>
-        <dd>{formatDelay(originalEta, latest.new_eta) ?? "—"}</dd>
+        <dd>{delayLabel ?? "—"}</dd>
+        <dt>Scheduled appointment</dt>
+        <dd>{appointmentWindow}</dd>
         <dt>Source</dt>
         <dd>{latest.source}</dd>
         <dt>Reason</dt>

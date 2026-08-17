@@ -476,3 +476,53 @@ def _is_delay(lowered: str) -> bool:
 
 def _has_lateness_language(lowered: str) -> bool:
     return bool(re.search(r"\b(?:late|behind|delayed)\b", lowered))
+
+
+def asks_driver_reassignment(lowered: str) -> bool:
+    """Driver cannot continue and needs another driver assigned to the shipment."""
+    if any(
+        phrase in lowered
+        for phrase in (
+            "another driver",
+            "different driver",
+            "new driver",
+            "replacement driver",
+            "change driver",
+            "change my driver",
+            "reassign",
+            "driver change",
+            "driver reassignment",
+            "someone else to drive",
+            "need a driver",
+            "send another driver",
+            "get another driver",
+            "driver unavailable",
+            "driver replacement",
+        )
+    ):
+        return True
+    unwell = any(
+        phrase in lowered
+        for phrase in (
+            "not feeling well",
+            "not feeling good",
+            "feeling sick",
+            "i'm sick",
+            "i am sick",
+            "im sick",
+            "i'm ill",
+            "i am ill",
+            "cannot drive",
+            "can't drive",
+            "can not drive",
+            "unable to drive",
+        )
+    )
+    if unwell and ("driver" in lowered or "drive" in lowered):
+        return True
+    if unwell and any(
+        phrase in lowered
+        for phrase in ("cannot continue", "can't continue", "can not continue", "unable to continue")
+    ):
+        return True
+    return False

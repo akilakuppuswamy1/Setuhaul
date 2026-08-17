@@ -191,11 +191,17 @@ class ToolExecutor:
         timezone_name = self._facility_timezone(shipment.destination_facility_id, timezone_name)
         latest = self._eta_service.get_latest(shipment_id)
         scheduled = self._scheduled_arrival(shipment_id, timezone_name=timezone_name)
-        delay_baseline = scheduled or self._original_eta(shipment_id) or now
+        historical_original = self._original_eta(shipment_id)
+        latest_eta = latest.latest_eta
         delay = arguments.get("delay_minutes") if isinstance(arguments.get("delay_minutes"), int) else None
         original_eta_local = (
             arguments.get("original_eta_local") if isinstance(arguments.get("original_eta_local"), str) else None
         )
+        if delay is not None and original_eta_local is None:
+            # Anchor relative delay to the planned arrival (first ETA), not the booked slot or latest update.
+            delay_baseline = historical_original or scheduled or latest_eta or now
+        else:
+            delay_baseline = scheduled or historical_original or latest_eta or now
         if delay is not None and original_eta_local:
             localized_original = localize_operational_clock(delay_baseline, original_eta_local, timezone_name)
             if localized_original is None:
@@ -205,9 +211,10 @@ class ToolExecutor:
         implied_eta = _as_utc(delay_baseline) + timedelta(minutes=delay) if delay is not None else None
 
         if new_eta is None and eta_local:
-            localized = localize_operational_clock(delay_baseline, eta_local, timezone_name)
+            eta_baseline = latest_eta or historical_original or delay_baseline
+            localized = localize_operational_clock(eta_baseline, eta_local, timezone_name)
             if localized is None:
-                localized = localize_clock_on(delay_baseline, eta_local, timezone_name)
+                localized = localize_clock_on(eta_baseline, eta_local, timezone_name)
             if localized is None:
                 raise SetuHaulError("The stated arrival time could not be interpreted.")
             new_eta = localized
