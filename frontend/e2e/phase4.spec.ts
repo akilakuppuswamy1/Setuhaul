@@ -1,9 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const API = process.env.SETUHAUL_API_URL ?? "http://127.0.0.1:8010";
+const HERO = "SH-1024";
 const RACE = "SHP-PHASE4-RACE-001";
 const RESCHEDULE = "SHP-PHASE4-RESCHEDULE-001";
 const NOCAP = "SHP-DEMO-NOCAP";
+const STALE_WIN = "SHP-E2E-STALE-001";
+const STALE_LOSE = "SHP-E2E-STALE-002";
 const VIEWPORTS = [
   { name: "1366x768", width: 1366, height: 768 },
   { name: "1440x900", width: 1440, height: 900 },
@@ -85,6 +88,64 @@ test("health is live before browser flows", async () => {
   expect(payload).toMatchObject({ status: "ok", service: "setuhaul" });
 });
 
+test("stale proposal loser after winner confirms shared slot", async ({ page }) => {
+  const winner = await shipmentByNumber(STALE_WIN);
+  const loser = await shipmentByNumber(STALE_LOSE);
+  const winAppts = await api(`/shipments/${winner.id}/appointments?page=1&page_size=20`);
+  const loseAppts = await api(`/shipments/${loser.id}/appointments?page=1&page_size=20`);
+  const winProposal = [...winAppts.payload.items]
+    .filter(
+      (row: { status: string; notes?: string | null }) =>
+        row.status === "requested" && (row.notes ?? "").includes("STEP7_PROPOSAL"),
+    )
+    .sort((a: { created_at: string }, b: { created_at: string }) => b.created_at.localeCompare(a.created_at))[0];
+  const loseProposal = [...loseAppts.payload.items]
+    .filter(
+      (row: { status: string; notes?: string | null }) =>
+        row.status === "requested" && (row.notes ?? "").includes("STEP7_PROPOSAL"),
+    )
+    .sort((a: { created_at: string }, b: { created_at: string }) => b.created_at.localeCompare(a.created_at))[0];
+  expect(winProposal).toBeTruthy();
+  expect(loseProposal).toBeTruthy();
+  const acceptWinner = await api(`/proposals/${winProposal.id}/accept`, { method: "POST", body: "{}" });
+  expect(acceptWinner.status).toBe(200);
+  const acceptLoser = await api(`/proposals/${loseProposal.id}/accept`, { method: "POST", body: "{}" });
+  expect(acceptLoser.status).toBe(409);
+
+  await bindShipment(page, STALE_LOSE);
+  await expect(page.getByTestId("stale-conflict")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("confirmation-summary")).toHaveCount(0);
+  await page.reload();
+  await bindShipment(page, STALE_LOSE);
+  await expect(page.getByTestId("stale-conflict")).toBeVisible({ timeout: 20_000 });
+});
+
+test("fresh hero booking on SH-1024", async ({ page }) => {
+  await bindShipment(page, HERO);
+  await expect(page.getByText("Jane Rivera").first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText("Dallas Distribution Center").first()).toBeVisible();
+  await sendDriver(
+    page,
+    "I'll be two hours late. I was supposed to reach by 6:30 PM, but I'll reach around 8:30 PM.",
+  );
+  await sendDriver(page, "I also have an emergency and need to leave by 9:30 PM.");
+  await sendDriver(page, "My ETA is 8:30 PM. What options do I have?");
+  await expect(page.getByRole("button", { name: /Select option/i }).first()).toBeVisible({ timeout: 60_000 });
+  const optionButtons = page.getByRole("button", { name: /Select option/i });
+  const optionCount = await optionButtons.count();
+  await optionButtons.nth(optionCount > 1 ? 1 : 0).click();
+  await expect(page.getByText(/Proposed appointment/i)).toBeVisible({ timeout: 60_000 });
+  await sendDriver(page, "Has it been confirmed?");
+  await expect(page.getByText(/read-only|not been confirmed|awaiting/i).first()).toBeVisible();
+  await page.getByRole("button", { name: "Confirm proposed appointment" }).click();
+  await expect(page.getByTestId("confirmation-summary")).toBeVisible({ timeout: 60_000 });
+  await page.reload();
+  await bindShipment(page, HERO);
+  await expect(page.getByTestId("confirmation-summary")).toBeVisible({ timeout: 20_000 });
+  await page.goto("/appointments");
+  await expect(page.locator("table.data").getByText(HERO).first()).toBeVisible({ timeout: 30_000 });
+});
+
 for (const viewport of VIEWPORTS) {
   test(`viewport ${viewport.name} has no overflow and keeps composer reachable`, async ({ page }) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
@@ -137,7 +198,11 @@ test("no-capacity shipment escalates without a proposal card", async ({ page }) 
 test("reschedule journey on SHP-PHASE4-RESCHEDULE-001", async ({ page }) => {
   const shipment = await shipmentByNumber(RESCHEDULE);
   const before = await api(`/shipments/${shipment.id}/appointments?page=1&page_size=50`);
-  const originalId = "75c4488c-f959-429c-8512-ad85aa8f029a";
+  const originalRow = before.payload.items.find((row: { notes?: string | null }) =>
+    (row.notes ?? "").includes("PHASE4-RESCHEDULE original 9:00 AM"),
+  );
+  expect(originalRow, "original reschedule appointment").toBeTruthy();
+  const originalId = originalRow.id as string;
   const alreadyRescheduled = before.payload.items.some((row: { id: string; notes?: string | null; status: string }) => {
     return row.id === originalId && (row.status === "cancelled" || (row.notes ?? "").includes("superseded_by="));
   });
@@ -196,74 +261,74 @@ test("normal booking then real concurrent confirmation on SHP-PHASE4-RACE-001", 
   const consumingBefore = before.payload.items.filter((row: { status: string; notes?: string | null }) => {
     return (row.status === "confirmed" || row.status === "held") && !(row.notes ?? "").includes("STEP7_PROPOSAL");
   });
+  expect(consumingBefore, "race fixture must be reset before concurrent test").toHaveLength(0);
+
   let winnerPage = page;
-  let slotId: string | null = consumingBefore[0]?.appointment_slot_id ?? null;
+  let slotId: string | null = null;
 
-  if (consumingBefore.length === 0) {
-    await bindShipment(page, RACE);
-    await expect(page.getByText("Phase4 Race Driver").first()).toBeVisible();
-    await expect(page.getByText("Chicago Cross-Dock").first()).toBeVisible();
-    await sendDriver(page, "I'm delayed in traffic. I'll arrive around 8:15 AM.");
-    await expect(page.getByText(/8:15\sAM/i).first()).toBeVisible();
-    await expect(page.getByTestId("confirmation-summary")).toHaveCount(0);
-    await sendDriver(page, "What options do I have?");
-    await expect(page.getByRole("button", { name: /Select option/i }).first()).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByText(/8:00\sAM/i).first()).toBeVisible();
-    await expect(page.getByText(/00:30 UTC/)).toHaveCount(0);
-    const morning = page.locator(".option-card", { hasText: /8:00\sAM/i });
-    if (await morning.count()) {
-      await morning.getByRole("button", { name: /Select option/i }).click();
-    } else {
-      await page.getByRole("button", { name: /Select option/i }).first().click();
-    }
-    await expect(page.getByText(/Proposed appointment/i)).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByTestId("confirmation-summary")).toHaveCount(0);
-    await sendDriver(page, "Has it been confirmed?");
-    await expect(page.getByText(/read-only/i).first()).toBeVisible();
-    await expect(page.getByTestId("confirmation-summary")).toHaveCount(0);
-
-    const proposalId = await pendingProposalId(shipment.id);
-    const proposal = await api(`/proposals/${proposalId}`);
-    expect(proposal.payload.status).toBe("proposed");
-    slotId = proposal.payload.slot_id;
-    const slotBefore = await api(`/appointment-slots/${slotId}`);
-    expect(slotBefore.payload.status).toBe("open");
-
-    const loserPage = await browser.newPage();
-    await bindShipment(loserPage, RACE);
-    await expect(loserPage.getByText(/Proposed appointment/i)).toBeVisible({ timeout: 30_000 });
-
-    const waitAccept = (target: Page) =>
-      target.waitForResponse(
-        (response) =>
-          response.url().includes(`/proposals/${proposalId}/accept`) && response.request().method() === "POST",
-        { timeout: 30_000 },
-      );
-    const [first, second] = await Promise.all([
-      waitAccept(page),
-      waitAccept(loserPage),
-      page.getByRole("button", { name: "Confirm proposed appointment" }).click(),
-      loserPage.getByRole("button", { name: "Confirm proposed appointment" }).click(),
-    ]);
-    const statuses = [first.status(), second.status()].sort();
-    expect(statuses).toEqual([200, 409]);
-    const winnerHttp = first.status() === 200 ? first : second;
-    const loserHttp = first.status() === 409 ? first : second;
-    const winnerBody = await winnerHttp.json();
-    const loserBody = await loserHttp.json().catch(() => ({}));
-    expect(winnerBody.appointment_id).toBeTruthy();
-    expect(loserBody?.appointment_id ?? loserBody?.appointmentId ?? null).toBeFalsy();
-
-    winnerPage = first.status() === 200 ? page : loserPage;
-    const conflictPage = first.status() === 409 ? page : loserPage;
-
-    await expect(conflictPage.getByTestId("stale-conflict")).toBeVisible({ timeout: 20_000 });
-    await expect(conflictPage.getByTestId("confirmation-summary")).toHaveCount(0);
-    await expect(conflictPage.getByText(/Your appointment is confirmed/i)).toHaveCount(0);
-    await expect(conflictPage.getByRole("button", { name: /select option/i })).toHaveCount(0);
-    await expect(winnerPage.getByTestId("confirmation-summary")).toBeVisible({ timeout: 20_000 });
-    await loserPage.close();
+  await bindShipment(page, RACE);
+  await expect(page.getByText("Phase4 Race Driver").first()).toBeVisible();
+  await expect(page.getByText("Chicago Cross-Dock").first()).toBeVisible();
+  await sendDriver(page, "I'm delayed in traffic. I'll arrive around 8:15 AM.");
+  await expect(page.getByText(/8:15\sAM/i).first()).toBeVisible();
+  await expect(page.getByTestId("confirmation-summary")).toHaveCount(0);
+  await sendDriver(page, "What options do I have?");
+  await expect(page.getByRole("button", { name: /Select option/i }).first()).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(/8:00\sAM/i).first()).toBeVisible();
+  await expect(page.getByText(/00:30 UTC/)).toHaveCount(0);
+  const morning = page.locator(".option-card", { hasText: /8:00\sAM/i });
+  if (await morning.count()) {
+    await morning.getByRole("button", { name: /Select option/i }).click();
+  } else {
+    await page.getByRole("button", { name: /Select option/i }).first().click();
   }
+  await expect(page.getByText(/Proposed appointment/i)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId("confirmation-summary")).toHaveCount(0);
+  await sendDriver(page, "Has it been confirmed?");
+  await expect(page.getByText(/read-only/i).first()).toBeVisible();
+  await expect(page.getByTestId("confirmation-summary")).toHaveCount(0);
+
+  const proposalId = await pendingProposalId(shipment.id);
+  const proposal = await api(`/proposals/${proposalId}`);
+  expect(proposal.payload.status).toBe("proposed");
+  slotId = proposal.payload.slot_id;
+  const slotBefore = await api(`/appointment-slots/${slotId}`);
+  expect(slotBefore.payload.status).toBe("open");
+
+  const loserPage = await browser.newPage();
+  await bindShipment(loserPage, RACE);
+  await expect(loserPage.getByText(/Proposed appointment/i)).toBeVisible({ timeout: 30_000 });
+
+  const waitAccept = (target: Page) =>
+    target.waitForResponse(
+      (response) =>
+        response.url().includes(`/proposals/${proposalId}/accept`) && response.request().method() === "POST",
+      { timeout: 30_000 },
+    );
+  const [first, second] = await Promise.all([
+    waitAccept(page),
+    waitAccept(loserPage),
+    page.getByRole("button", { name: "Confirm proposed appointment" }).click(),
+    loserPage.getByRole("button", { name: "Confirm proposed appointment" }).click(),
+  ]);
+  const statuses = [first.status(), second.status()].sort();
+  expect(statuses).toEqual([200, 409]);
+  const winnerHttp = first.status() === 200 ? first : second;
+  const loserHttp = first.status() === 409 ? first : second;
+  const winnerBody = await winnerHttp.json();
+  const loserBody = await loserHttp.json().catch(() => ({}));
+  expect(winnerBody.appointment_id).toBeTruthy();
+  expect(loserBody?.appointment_id ?? loserBody?.appointmentId ?? null).toBeFalsy();
+
+  winnerPage = first.status() === 200 ? page : loserPage;
+  const conflictPage = first.status() === 409 ? page : loserPage;
+
+  await expect(conflictPage.getByTestId("stale-conflict")).toBeVisible({ timeout: 20_000 });
+  await expect(conflictPage.getByTestId("confirmation-summary")).toHaveCount(0);
+  await expect(conflictPage.getByText(/Your appointment is confirmed/i)).toHaveCount(0);
+  await expect(conflictPage.getByRole("button", { name: /select option/i })).toHaveCount(0);
+  await expect(winnerPage.getByTestId("confirmation-summary")).toBeVisible({ timeout: 20_000 });
+  await loserPage.close();
 
   await winnerPage.reload();
   await bindShipment(winnerPage, RACE);

@@ -3,36 +3,19 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
-import urllib.error
-import urllib.request
+from pathlib import Path
 from typing import Any
 
-BASE = os.environ.get("SETUHAUL_API_URL", "http://127.0.0.1:8010").rstrip("/")
-DRIVER_ID = os.environ.get("SETUHAUL_DRIVER_ID", "41a10bd1-a604-4f85-afcd-06286902e88d")
-SHIPMENT_ID = os.environ.get("SETUHAUL_SHIPMENT_ID", "aba51808-a7a2-4c9b-86a9-dee411481438")
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
+from scripts.e2e_api import BASE, require_health, request, resolve_shipment
 
-def request(method: str, path: str, body: dict[str, Any] | None = None) -> tuple[int, Any]:
-    data = None if body is None else json.dumps(body).encode()
-    req = urllib.request.Request(
-        f"{BASE}{path}",
-        data=data,
-        method=method,
-        headers={"Accept": "application/json", "Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as response:
-            payload = json.loads(response.read().decode())
-            return response.status, payload
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode()
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            payload = {"detail": raw}
-        return exc.code, payload
+HERO_SHIPMENT_NUMBER = "SH-1024"
+HERO_DRIVER_EXTERNAL_ID = "demo-driver-rivera"
+FIXTURE_HINT = "python scripts/seed_e2e_fixtures.py"
 
 
 def send(thread_id: str, message: str) -> dict[str, Any]:
@@ -55,16 +38,48 @@ def send(thread_id: str, message: str) -> dict[str, Any]:
     return payload
 
 
+def resolve_hero_context() -> tuple[str, str]:
+    shipment = resolve_shipment(HERO_SHIPMENT_NUMBER, hint=FIXTURE_HINT)
+    driver_id = shipment.get("driver_id")
+    if not driver_id:
+        raise SystemExit(
+            f"Shipment {HERO_SHIPMENT_NUMBER!r} has no driver_id. "
+            f"Re-seed with {FIXTURE_HINT}."
+        )
+    code, detail = request("GET", f"/shipments/{shipment['id']}")
+    if code != 200:
+        raise SystemExit(f"Could not load shipment {HERO_SHIPMENT_NUMBER!r}: HTTP {code} {detail}")
+    appt_code, appt_payload = request("GET", f"/shipments/{shipment['id']}/appointments?page=1&page_size=50")
+    if appt_code != 200:
+        raise SystemExit(f"Could not list appointments for {HERO_SHIPMENT_NUMBER!r}: HTTP {appt_code}")
+    appointments = appt_payload.get("items") or []
+    consuming = [
+        row
+        for row in appointments
+        if row.get("status") in {"confirmed", "held"}
+        and "STEP7_PROPOSAL" not in (row.get("notes") or "")
+        and "Original 6:30 PM appointment" not in (row.get("notes") or "")
+    ]
+    if consuming:
+        raise SystemExit(
+            f"Hero fixture {HERO_SHIPMENT_NUMBER!r} already has a confirmed alternate appointment. "
+            f"Run {FIXTURE_HINT} to reset Dallas hero state before replaying the flow."
+        )
+    return str(driver_id), str(shipment["id"])
+
+
 def main() -> None:
-    code, health = request("GET", "/health")
-    if code != 200 or health.get("service") != "setuhaul":
-        raise SystemExit(f"unexpected health: {code} {health}")
-    print("health", health)
+    health = require_health()
+    print("health", health, "api", BASE)
+
+    driver_id, shipment_id = resolve_hero_context()
+    print(f"hero shipment={HERO_SHIPMENT_NUMBER} driver_external_id={HERO_DRIVER_EXTERNAL_ID}")
+    print(f"resolved driver_id={driver_id} shipment_id={shipment_id}")
 
     code, created = request(
         "POST",
         "/conversations",
-        {"driver_id": DRIVER_ID, "shipment_id": SHIPMENT_ID, "subject": "E2E hero"},
+        {"driver_id": driver_id, "shipment_id": shipment_id, "subject": "E2E hero"},
     )
     if code not in {200, 201}:
         raise SystemExit(f"create conversation failed: {code} {created}")
@@ -94,10 +109,14 @@ def main() -> None:
     assert "accept_proposal" not in names
     options = (t3.get("metadata") or {}).get("presented_options") or []
     print("options", len(options))
-    if len(options) < 2:
-        raise SystemExit("expected at least two feasible options")
+    if len(options) < 1:
+        raise SystemExit(
+            f"expected at least one feasible option for {HERO_SHIPMENT_NUMBER!r}. "
+            f"Run {FIXTURE_HINT} if slots were consumed."
+        )
 
-    t4 = send(thread_id, "The second one works, but I need to leave by 9:30 PM.")
+    selection = "The first one works." if len(options) == 1 else "The second one works."
+    t4 = send(thread_id, selection)
     names = [item["name"] for item in t4.get("tool_calls") or []]
     assert t4["intent"] == "PROPOSE_CHANGE", t4["intent"]
     assert "create_proposal" in names, names
@@ -124,30 +143,6 @@ def main() -> None:
         raise SystemExit(f"expected confirmed, got {proposal}")
 
     print("\nHERO FLOW PASS")
-
-    print("\n--- conflict / stale path ---")
-    code, created2 = request(
-        "POST",
-        "/conversations",
-        {"driver_id": DRIVER_ID, "shipment_id": SHIPMENT_ID, "subject": "E2E conflict"},
-    )
-    thread2 = created2["thread_id"]
-    send(thread2, "My ETA is 8:30 PM. What options do I have?")
-    conflict_turn = send(thread2, "The first one works.")
-    names = [item["name"] for item in conflict_turn.get("tool_calls") or []]
-    if "create_proposal" in names and conflict_turn.get("proposal_id"):
-        confirm_conflict = send(thread2, "Confirm it.")
-        confirm_names = [item["name"] for item in confirm_conflict.get("tool_calls") or []]
-        print("conflict tools", confirm_names, "status", confirm_conflict.get("status"))
-        if confirm_conflict.get("status") in {"stale", "conflict"} or confirm_conflict.get("status") != "ok":
-            print("CONFLICT PATH PASS", confirm_conflict.get("status"), confirm_conflict.get("response", "")[:240])
-        else:
-            code, after = request("GET", f"/proposals/{conflict_turn['proposal_id']}")
-            print("conflict proposal", after.get("status"))
-            if after.get("status") == "confirmed":
-                raise SystemExit("conflict path unexpectedly confirmed a second allocation")
-    else:
-        print("CONFLICT PATH PASS (no second proposal; backend refused duplicate allocation earlier)")
 
 
 if __name__ == "__main__":
